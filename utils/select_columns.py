@@ -15,9 +15,10 @@ At most MAX_ROWS data rows are written.
 
 Assumes comma-delimited input with one header row and no quoted fields.
 
-Reads data/*.csv and writes OUTPUT to refined/, both next to this script.
+Reads data/*.csv and writes OUTPUT to refined/, both in the repository root
+(the parent of this script's directory). Works from any working directory.
 
-    python select_columns.py
+    python utils/select_columns.py
 """
 import shutil
 import sys
@@ -28,8 +29,9 @@ from datetime import datetime
 from itertools import islice, repeat
 from pathlib import Path
 
-DATA_DIR = Path(__file__).resolve().parent / "data"
-REFINED_DIR = Path(__file__).resolve().parent / "refined"
+ROOT = Path(__file__).resolve().parent.parent
+DATA_DIR = ROOT / "data"
+REFINED_DIR = ROOT / "refined"
 OUTPUT = REFINED_DIR / "small.csv"
 
 # Columns to keep, in output order (looked up in the header row)
