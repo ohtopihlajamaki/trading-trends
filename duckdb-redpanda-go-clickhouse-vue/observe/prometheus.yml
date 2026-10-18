@@ -1,0 +1,30 @@
+# Scaled services are found through compose DNS: the service name resolves
+# to every instance.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: redpanda
+    metrics_path: /public_metrics
+    static_configs:
+      - targets: ["redpanda:9644"]
+  - job_name: clickhouse
+    static_configs:
+      - targets: ["clickhouse:9363"]
+  - job_name: signal
+    dns_sd_configs:
+      - names: [signal]
+        type: A
+        port: 9100
+  - job_name: gateway
+    dns_sd_configs:
+      - names: [gateway]
+        type: A
+        port: 8000
+  # Present only while a replay runs (docker compose --profile replay up replayer)
+  - job_name: replayer
+    dns_sd_configs:
+      - names: [replayer]
+        type: A
+        port: 9100

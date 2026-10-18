@@ -1,0 +1,2 @@
+# Pinned: hash() decides the bucket of every symbol and can change between releases
+duckdb==1.5.6

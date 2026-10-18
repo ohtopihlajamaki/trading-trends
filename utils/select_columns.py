@@ -15,7 +15,7 @@ At most MAX_ROWS data rows are written.
 
 Assumes comma-delimited input with one header row and no quoted fields.
 
-Reads data/*.csv and writes OUTPUT to refined/, both in the repository root
+Reads data/raw/*.csv and writes OUTPUT to refined/, both in the repository root
 (the parent of this script's directory). Works from any working directory.
 
     python utils/select_columns.py
@@ -30,7 +30,7 @@ from itertools import islice, repeat
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = ROOT / "data"
+DATA_DIR = ROOT / "data" / "raw"
 REFINED_DIR = ROOT / "refined"
 OUTPUT = REFINED_DIR / "small.csv"
 

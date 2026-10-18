@@ -1,0 +1,227 @@
+# Stock signals: DuckDB prep -> Redpanda -> Go signal service -> ClickHouse
+# -> Go gateway -> Vue UI. See PLAN.md. Copy .env.example to .env first.
+#
+#   docker compose up -d                                  # broker, storage, signal, gateway, ui
+#   docker compose --profile prep run --rm prep           # CSV -> Parquet buckets
+#   docker compose --profile replay run --rm replayer     # Parquet -> ticks
+#   docker compose --profile observe up -d                # Prometheus + Grafana
+#
+# Benchmarks on Linux add compose.perf.yaml (see that file).
+
+name: stock-signals
+
+x-go-build: &go-build
+  args:
+    GO_IMAGE: ${GO_IMAGE:?copy .env.example to .env}
+    RUNTIME_IMAGE: ${RUNTIME_IMAGE:?copy .env.example to .env}
+
+x-kafka-env: &kafka-env
+  KAFKA_BROKERS: redpanda:9092
+  PARTITIONS: ${PARTITIONS}
+
+services:
+  redpanda:
+    image: ${REDPANDA_IMAGE:?copy .env.example to .env}
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=${REDPANDA_SMP}
+      - --memory=${REDPANDA_MEMORY}
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+      - --rpc-addr=redpanda:33145
+      - --advertise-rpc-addr=redpanda:33145
+    ports:
+      - "19092:19092"
+      - "9644:9644"
+    volumes:
+      - redpanda:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  redpanda-init:
+    image: ${REDPANDA_IMAGE}
+    entrypoint: ["bash", "/init/create-topics.sh"]
+    environment:
+      RPK_BROKERS: redpanda:9092
+      PARTITIONS: ${PARTITIONS}
+      RETENTION_BYTES: ${RETENTION_BYTES}
+    volumes:
+      - ./redpanda:/init:ro
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    restart: "no"
+
+  console:
+    image: ${CONSOLE_IMAGE:?copy .env.example to .env}
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      REDPANDA_ADMINAPI_ENABLED: "true"
+      REDPANDA_ADMINAPI_URLS: http://redpanda:9644
+    ports:
+      - "8080:8080"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+
+  clickhouse:
+    image: ${CLICKHOUSE_IMAGE:?copy .env.example to .env}
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+      # The entrypoint would chown the read-only data mount and exit; the
+      # volume already belongs to the clickhouse user
+      CLICKHOUSE_DO_NOT_CHOWN: "1"
+      CH_KAFKA_CONSUMERS: ${CH_KAFKA_CONSUMERS}
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse:/var/lib/clickhouse
+      - ./clickhouse/init:/docker-entrypoint-initdb.d:ro
+      - ./clickhouse/config.d/server.xml:/etc/clickhouse-server/config.d/server.xml:ro
+      - ./clickhouse/users.d/settings.xml:/etc/clickhouse-server/users.d/settings.xml:ro
+      - ./clickhouse:/sql:ro
+      # file() reads the Parquet buckets for backfill (clickhouse/backfill.sql)
+      - ${DATA_DIR}:/var/lib/clickhouse/user_files/data:ro
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    healthcheck:
+      # Healthy once the init scripts have created the last table
+      test: ["CMD-SHELL", "clickhouse client --user \"$$CLICKHOUSE_USER\" --password \"$$CLICKHOUSE_PASSWORD\" -q 'EXISTS TABLE kafka_errors_signals_queue_mv' | grep -q 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+    depends_on:
+      redpanda-init:
+        condition: service_completed_successfully
+
+  prep:
+    profiles: [prep]
+    build:
+      context: ./prep
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:?copy .env.example to .env}
+    environment:
+      DAYS: ${DAYS}
+      INSTRUMENT_DAYS: ${INSTRUMENT_DAYS}
+      PARTITIONS: ${PARTITIONS}
+      PREP_THREADS: ${PREP_THREADS}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    volumes:
+      - ${DATA_DIR}/raw:/data/raw:ro
+      - ${DATA_DIR}/ticks:/data/ticks
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+
+  replayer:
+    profiles: [replay]
+    build:
+      context: ./replayer
+      <<: *go-build
+    environment:
+      <<: *kafka-env
+      DAYS: ${DAYS}
+      REPLAY_WORKERS: ${REPLAY_WORKERS}
+      REPLAY_THREADS: ${REPLAY_THREADS:-}
+      REPLAY_SPEED: ${REPLAY_SPEED}
+      REPLAY_FROM: ${REPLAY_FROM:-}
+    volumes:
+      - ${DATA_DIR}/ticks:/data/ticks:ro
+    depends_on:
+      redpanda-init:
+        condition: service_completed_successfully
+
+  signal:
+    build:
+      context: ./signal
+      <<: *go-build
+    environment:
+      <<: *kafka-env
+      EMA_INIT: ${EMA_INIT}
+    depends_on:
+      redpanda-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: ./gateway
+      <<: *go-build
+    environment:
+      <<: *kafka-env
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    # One fixed port for the dev setup; compose.perf.yaml removes it so the
+    # gateway can scale. The UI reaches every instance through the network.
+    ports:
+      - "8000:8000"
+    healthcheck:
+      # 200 once the instance has its partitions and receives live records
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8000/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    restart: unless-stopped
+
+  ui:
+    image: ${NODE_IMAGE:?copy .env.example to .env}
+    working_dir: /app
+    command: ["sh", "-c", "npm ci --no-audit --no-fund && exec npm run dev"]
+    environment:
+      GATEWAY_URL: http://gateway:8000
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./ui:/app
+      # Linux binaries stay in the volume, never mixed with the host's
+      - ui-node-modules:/app/node_modules
+    depends_on:
+      - gateway
+
+  prometheus:
+    profiles: [observe]
+    image: ${PROMETHEUS_IMAGE:?copy .env.example to .env}
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observe/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus:/prometheus
+
+  grafana:
+    profiles: [observe]
+    image: ${GRAFANA_IMAGE:?copy .env.example to .env}
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./observe/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observe/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
+volumes:
+  redpanda:
+  clickhouse:
+  ui-node-modules:
+  prometheus:

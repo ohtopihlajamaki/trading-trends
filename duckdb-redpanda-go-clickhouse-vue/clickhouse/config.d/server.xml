@@ -1,0 +1,15 @@
+<clickhouse>
+    <logger>
+        <level>warning</level>
+    </logger>
+    <!-- The Kafka tables run up to CH_KAFKA_CONSUMERS + 2 consumer threads -->
+    <background_message_broker_schedule_pool_size>32</background_message_broker_schedule_pool_size>
+    <!-- Scraped by the observe profile -->
+    <prometheus>
+        <endpoint>/metrics</endpoint>
+        <port>9363</port>
+        <metrics>true</metrics>
+        <events>true</events>
+        <asynchronous_metrics>true</asynchronous_metrics>
+    </prometheus>
+</clickhouse>

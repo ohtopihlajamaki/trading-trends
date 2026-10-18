@@ -1,0 +1,9 @@
+<clickhouse>
+    <profiles>
+        <default>
+            <!-- Parse floats exactly, as Go does (HTTP inserts, file() backfill).
+                 The Kafka tables set it themselves: their consumers ignore this. -->
+            <precise_float_parsing>1</precise_float_parsing>
+        </default>
+    </profiles>
+</clickhouse>
