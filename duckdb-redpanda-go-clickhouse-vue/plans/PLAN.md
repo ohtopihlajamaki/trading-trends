@@ -305,6 +305,14 @@ Steps 1–5 run on the laptop with Monday (`DAYS=081121`); step 6 needs the Linu
 - **Open question: rounding-noise baselines.** After a flat start, both EMAs differ only by rounding (|EMA38 − EMA100| ≤ 1e-12 relative), and that sign becomes the baseline. On Monday, 229 of the 5,735 signals flip from such a baseline. The service and the oracle agree because both follow rule 5 to the letter. Treating |Δ| ≤ ε·|EMA100| as `rel = 0` would remove these signals, but that changes the spec and the oracle.
 - **Deviations.** The gateway publishes a fixed 8000 in the base setup; `compose.perf.yaml` removes it so the gateway can scale. Gateways never commit offsets: a restarted instance starts at the live end, and earlier data comes from ClickHouse.
 
+## Todo
+
+Tick an item off (`- [x]`) in the commit that finishes it.
+
+- [ ] Is Redpanda free to use, and is it acceptable for the course (or does the course require Kafka itself)? See the open questions in `stock-signals-implementation-plan.md`.
+- [ ] Understand, clarify and document the logic of the EMA calculations. How does it work with rolling windows, if we use those instead of tumbling windows?
+- [ ] Document the interfaces between components, with examples of what data is transferred and how.
+
 ## Sources
 
 - Full implementation plan (`stock-signals-implementation-plan.md`)
