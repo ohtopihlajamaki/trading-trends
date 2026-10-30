@@ -52,7 +52,7 @@ discussion its measurements.
 
 **1. The whole week on Linux** (Performance)
 
-Run `DAYS="081121 091121 101121 111121 121121 131121 141121" bench/full-speed.sh` on fresh volumes, then `clickhouse/check.sh`. Report total ticks, wall time,
+Run `DAYS="081121 091121 101121 111121 121121" bench/full-speed.sh` on fresh volumes, then `clickhouse/check.sh`. Report total ticks, wall time,
 ticks/s, the latency distribution, late ticks and the check results. Then replay the week at a fixed high
 speed (for example 300×) to show that latency stays low and stable over all of it, not only while draining
 a backlog.
