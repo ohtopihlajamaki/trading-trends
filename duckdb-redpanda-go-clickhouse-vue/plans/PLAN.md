@@ -310,6 +310,10 @@ Steps 1–5 run on the laptop with Monday (`DAYS=081121`); step 6 needs the Linu
 Tick an item off (`- [x]`) in the commit that finishes it.
 
 - [ ] Is Redpanda free to use, and is it acceptable for the course (or does the course require Kafka itself)? See the open questions in `stock-signals-implementation-plan.md`.
+  - [ ] Replication factor 1 on one broker means no fault tolerance: state it as out of scope in the report, or show a 3-broker run (free in Community Edition).
+  - [ ] Dev-container mode disables fsync: report benchmark numbers from `compose.perf.yaml` and say so.
+  - [ ] Find the broker's scaling ceiling: defaults are `REDPANDA_SMP=1`, `REDPANDA_MEMORY=1G`; if Redpanda is the bottleneck, show the effect of more SMP and partitions.
+  - [ ] Justify Redpanda over Kafka as lighter operations, not a Kafka-missing feature, so the design carries over to Kafka.
 - [ ] Understand, clarify and document the logic of the EMA calculations. How does it work with rolling windows, if we use those instead of tumbling windows?
 - [ ] Document the interfaces between components, with examples of what data is transferred and how.
 
