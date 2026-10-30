@@ -45,7 +45,7 @@ week on the Linux box). Replaying the same days twice appends them twice; start 
 | `clickhouse/` | Schema and Kafka tables (`init/`), `oracle.sql`, `check.sh`, `backfill.sql` |
 | `redpanda/` | Topic creation |
 | `observe/` | Prometheus and Grafana provisioning |
-| `bench/` | `replay-speeds.sh` (producer speed sweep, results in `bench/results/`), `reset-signal.sh`, `signal-drain.sh K` (time K signal instances draining the `ticks` topic) |
+| `bench/` | `replay-speeds.sh` (producer speed sweep, results in `bench/results/`), `full-speed.sh` (time every stage of a full-speed replay), `reset-signal.sh`, `signal-drain.sh K` (time K signal instances draining the `ticks` topic) |
 
 ## Checks
 
