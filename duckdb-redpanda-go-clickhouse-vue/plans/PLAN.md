@@ -307,8 +307,45 @@ Steps 1–5 run on the laptop with Monday (`DAYS=081121`); step 6 needs the Linu
 
 ## Todo
 
-Tick an item off (`- [x]`) in the commit that finishes it.
+Tick an item off (`- [x]`) in the commit that finishes it. The reasons and commands are in
+`performance-next-steps.md`, which maps each item to the evaluation criteria.
 
+**Functionality**
+- [ ] Follow the spec: `EMA_INIT=zero` and the ≤/≥ crossover rule as defaults, with `first_close` + flip kept as a measured variant.
+  - [ ] `CROSSOVER_RULE=spec|flip` in the signal service (compare with the previous window's EMAs, (0, 0) before the first).
+  - [ ] Zero seeding and the spec rule in `oracle.sql`, chosen by the same settings and passed through by `check.sh`.
+  - [ ] Unit tests: first window under `zero`; the sequences −,0,+ / +,0,+ / −,0,−.
+  - [ ] Change the defaults in `.env.example`, `compose.yaml` and the service, and update the signal rules above.
+  - [ ] Count each variant's signals on the week (first-window BUYs, ties, the 229 rounding-noise flips).
+  - [ ] Check that the price chart still reads well when the EMAs start near 0.
+- [ ] Pass `clickhouse/check.sh` on the whole week (Mon–Fri) in one run, not only on Monday.
+
+**Late and out-of-order events**
+- [ ] Measure disorder in the raw CSVs in file order: share of late trade rows per symbol and per bucket, lateness p50/p99/max per exchange.
+- [ ] `PREP_ORDER=receipt`: buckets in file order instead of event-time order.
+- [ ] Bounded out-of-orderness in the signal service (`ALLOWED_LATENESS`); windows close when the watermark passes their end.
+- [ ] Sweep `ALLOWED_LATENESS`: late ticks, results that differ from the oracle, and latency.
+
+**Performance and scalability (Linux, `compose.perf.yaml`)**
+- [ ] Replay the whole week at full speed, and again at a fixed speed (e.g. 300×), to show stable latency.
+- [ ] Scaling sweep: 1/2/4/8 signal instances and varied `CPUS_SIGNAL`, with `docker stats` CPU and memory logged per run.
+- [ ] Results per exchange (FR/NL/ETR alone, then all three).
+- [ ] Ticks per partition and per instance (long tail, hot symbols); try a greedy symbol-to-bucket map if one partition is the bottleneck.
+- [ ] Subscriber scaling: 1–1000 probe clients, then `--scale gateway=M`.
+
+**Creative explorations**
+- [ ] Signal service: one goroutine per partition, no blocking on produce and commit; compare with N instances.
+- [ ] Periodic watermarks from the replayer, bounded by `ALLOWED_LATENESS`.
+- [ ] Configurable gateway flush interval (50 ms against 250 ms).
+
+**Report (ACM template, 4–5 pages)**
+- [ ] Dataset analysis: extend `notebooks/dataset_overview.ipynb` per exchange and per security type, trade events against all events, the peaks.
+- [ ] Explain how tick, housekeeping and metadata (`instruments`) rows are handled, and the normalization.
+- [ ] State the relaxations: windows without trades are skipped, every client gets every signal.
+- [ ] Describe the visualization, with screenshots.
+- [ ] Each member answers the three teamwork questions.
+
+**Broker and documentation**
 - [ ] Is Redpanda free to use, and is it acceptable for the course (or does the course require Kafka itself)? See the open questions in `stock-signals-implementation-plan.md`.
   - [ ] Replication factor 1 on one broker means no fault tolerance: state it as out of scope in the report, or show a 3-broker run (free in Community Edition).
   - [ ] Dev-container mode disables fsync: report benchmark numbers from `compose.perf.yaml` and say so.
