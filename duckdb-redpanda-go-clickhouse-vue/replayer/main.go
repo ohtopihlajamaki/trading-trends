@@ -10,7 +10,10 @@
 //
 // REPLAY_FROM=HH:MM[:SS] (Europe/Berlin) starts the replay at that time of the
 // first day: earlier ticks are skipped, and a paced replay's clock starts at
-// exactly that moment.
+// exactly that moment. REPLAY_UNTIL=HH:MM[:SS] (same day) stops before the
+// first tick at or after that time, without day-end watermarks, so a later
+// run with REPLAY_FROM at the same time continues the stream (bench/realtime.sh
+// fast-forwards to a window this way, then replays it in real time).
 //
 // REPLAY_THREADS caps the OS threads that run Go code at once (GOMAXPROCS);
 // by default the replayer uses every CPU the container has.
@@ -72,6 +75,7 @@ type config struct {
 	speed       float64 // multiple of real time; 0 means as fast as possible
 	from        string  // REPLAY_FROM as given, "" for the first tick
 	fromMs      int64   // REPLAY_FROM on the first day, epoch ms; 0 if unset
+	untilMs     int64   // REPLAY_UNTIL on the first day, epoch ms; 0 if unset
 	metricsAddr string
 }
 
@@ -112,22 +116,36 @@ func loadConfig() (config, error) {
 	if len(c.days) == 0 {
 		return c, fmt.Errorf("DAYS is empty")
 	}
-	if c.from = os.Getenv("REPLAY_FROM"); c.from != "" {
-		hms := c.from
-		if strings.Count(hms, ":") == 1 {
-			hms += ":00"
-		}
-		berlin, err := time.LoadLocation("Europe/Berlin")
-		if err != nil {
-			return c, err
-		}
-		t, err := time.ParseInLocation("020106 15:04:05", c.days[0]+" "+hms, berlin)
-		if err != nil {
-			return c, fmt.Errorf("REPLAY_FROM must be HH:MM or HH:MM:SS, got %q", c.from)
-		}
-		c.fromMs = t.UnixMilli()
+	c.from = os.Getenv("REPLAY_FROM")
+	if c.fromMs, err = timeOfDay("REPLAY_FROM", c.days[0], c.from); err != nil {
+		return c, err
+	}
+	if c.untilMs, err = timeOfDay("REPLAY_UNTIL", c.days[0], os.Getenv("REPLAY_UNTIL")); err != nil {
+		return c, err
+	}
+	if c.untilMs > 0 && c.untilMs <= c.fromMs {
+		return c, fmt.Errorf("REPLAY_UNTIL must be later than REPLAY_FROM")
 	}
 	return c, nil
+}
+
+// timeOfDay turns HH:MM[:SS] (Europe/Berlin) on day into epoch ms; "" gives 0.
+func timeOfDay(name, day, hms string) (int64, error) {
+	if hms == "" {
+		return 0, nil
+	}
+	if strings.Count(hms, ":") == 1 {
+		hms += ":00"
+	}
+	berlin, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		return 0, err
+	}
+	t, err := time.ParseInLocation("020106 15:04:05", day+" "+hms, berlin)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be HH:MM or HH:MM:SS, got %q", name, hms)
+	}
+	return t.UnixMilli(), nil
 }
 
 // row is one tick as prep writes it (all columns nullable in DuckDB's output).
@@ -154,6 +172,7 @@ type bucketReader struct {
 	files   []string
 	dayEnds []int64
 	fromMs  int64 // ticks before this are skipped
+	untilMs int64 // the bucket ends at the first tick at or after this; 0 = never
 
 	file   int
 	f      *os.File
@@ -163,8 +182,8 @@ type bucketReader struct {
 	cur    item
 }
 
-func newBucketReader(dir string, bucket int, days []string, fromMs int64) (*bucketReader, error) {
-	b := &bucketReader{bucket: bucket, buf: make([]row, 8192), file: -1, fromMs: fromMs}
+func newBucketReader(dir string, bucket int, days []string, fromMs, untilMs int64) (*bucketReader, error) {
+	b := &bucketReader{bucket: bucket, buf: make([]row, 8192), file: -1, fromMs: fromMs, untilMs: untilMs}
 	berlin, err := time.LoadLocation("Europe/Berlin")
 	if err != nil {
 		return nil, err
@@ -192,6 +211,12 @@ func (b *bucketReader) next() (bool, error) {
 			b.pos++
 			if r.EventTS/1000 < b.fromMs {
 				continue
+			}
+			if b.untilMs > 0 && r.EventTS/1000 >= b.untilMs {
+				b.r.Close() // stopped early: no watermark, nothing after this
+				b.f.Close()
+				b.r, b.f = nil, nil
+				return false, nil
 			}
 			b.cur = item{symbol: r.Symbol, sectype: r.SecType, last: r.Last,
 				tsMs: r.EventTS / 1000, seq: r.Seq}
@@ -379,7 +404,7 @@ func main() {
 	heaps := make([]readerHeap, cfg.workers)
 	origin := int64(1<<63 - 1)
 	for k := 0; k < cfg.partitions; k++ {
-		b, err := newBucketReader(cfg.dir, k, cfg.days, cfg.fromMs)
+		b, err := newBucketReader(cfg.dir, k, cfg.days, cfg.fromMs, cfg.untilMs)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -409,9 +434,13 @@ func main() {
 	}
 	defer cl.Close()
 
-	speed := "max"
+	speedArg := "max" // as REPLAY_SPEED takes it
 	if cfg.speed > 0 {
-		speed = strconv.FormatFloat(cfg.speed, 'g', -1, 64) + "x"
+		speedArg = strconv.FormatFloat(cfg.speed, 'g', -1, 64)
+	}
+	speed := speedArg
+	if cfg.speed > 0 {
+		speed += "x"
 	}
 	startAt := "the first tick"
 	if cfg.from != "" {
@@ -422,6 +451,9 @@ func main() {
 
 	var st stats
 	start := time.Now()
+	// The pacing anchor, for scripts that map event time to wall time:
+	// a record with event time ts is due at start_ms + (ts - origin_ms) / speed
+	log.Printf("clock start_ms=%d origin_ms=%d speed=%g", start.UnixMilli(), origin, cfg.speed)
 	var wg sync.WaitGroup
 	errs := make(chan error, cfg.workers)
 	for w := range heaps {
@@ -473,7 +505,7 @@ func main() {
 	}
 	// The same in key=value form, for scripts (bench/replay-speeds.sh)
 	log.Printf("summary speed=%s ticks=%d watermarks=%d errors=%d took_s=%.3f ticks_per_s=%.0f planned_s=%.3f max_lag_ms=%.1f",
-		strings.TrimSuffix(speed, "x"), n, st.watermarks.Load(), st.errors.Load(), elapsed.Seconds(),
+		speedArg, n, st.watermarks.Load(), st.errors.Load(), elapsed.Seconds(),
 		float64(n)/elapsed.Seconds(), sched.Seconds(), float64(lag)/float64(time.Millisecond))
 	failed := false
 	for err := range errs {

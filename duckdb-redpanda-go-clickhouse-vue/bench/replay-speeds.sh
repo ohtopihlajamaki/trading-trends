@@ -29,26 +29,7 @@ days=${DAYS:-081121}
 partitions=${PARTITIONS:-32}
 topic=ticks-demo
 
-# --- The machine -------------------------------------------------------------
-host_os() {
-  case "$(uname -s)" in
-    Darwin) echo "macOS $(sw_vers -productVersion)" ;;
-    Linux)
-      if grep -qi microsoft /proc/version 2>/dev/null; then
-        echo "Windows WSL2 (kernel $(uname -r))"
-      else
-        (. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-Linux} (kernel $(uname -r))") || uname -sr
-      fi ;;
-    *) uname -sr ;;
-  esac
-}
-host_cpu() {
-  case "$(uname -s)" in
-    Darwin) sysctl -n machdep.cpu.brand_string ;;
-    *) awk -F': ' '/^(model name|Model|Hardware)/ { print $2; exit }' /proc/cpuinfo ;;
-  esac
-}
-clean() { tr -d ',"' <<<"$1"; }  # keep CSV fields simple
+. bench/lib.sh
 
 docker compose up -d --wait redpanda >/dev/null 2>&1
 read -r docker_cpus docker_mem docker_ver <<<"$(docker info --format '{{.NCPU}} {{.MemTotal}} {{.ServerVersion}}')"

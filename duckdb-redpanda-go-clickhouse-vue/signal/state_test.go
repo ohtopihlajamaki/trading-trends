@@ -143,3 +143,18 @@ func TestWindowStartIsClockAligned(t *testing.T) {
 		}
 	}
 }
+
+func TestBarsCarryTheClosingRecordsSendTime(t *testing.T) {
+	p, r := newPartition(true), &recorder{}
+	p.add(&tick{Symbol: "A", Last: 10, TsMs: t0 + 1000, Seq: 1, SentMs: 100}, r)
+	p.add(&tick{Symbol: "B", Last: 20, TsMs: t0 + 2000, Seq: 2, SentMs: 200}, r)
+	// B's next tick crosses the boundary: it closes B, then the watermark closes A
+	p.add(&tick{Symbol: "B", Last: 21, TsMs: min5(1), Seq: 3, SentMs: 300}, r)
+	if len(r.bars) != 2 || r.bars[0].triggerSentMs != 300 || r.bars[1].triggerSentMs != 300 {
+		t.Fatalf("got %+v, want both bars closed by the record sent at 300", r.bars)
+	}
+	p.add(&tick{Symbol: "", TsMs: min5(2), SentMs: 400}, r) // a watermark closes B again
+	if len(r.bars) != 3 || r.bars[2].triggerSentMs != 400 {
+		t.Fatalf("got %+v, want the watermark's send time", r.bars)
+	}
+}

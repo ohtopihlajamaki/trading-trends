@@ -8,7 +8,8 @@
 # Floats are read as text and converted with toFloat64 under
 # precise_float_parsing = 1. ClickHouse's JSON reader ignores that setting
 # and can land one ULP off ("4.94" -> 4.9399999999999995), which is enough
-# for the oracle's EMAs to differ from the signal service's.
+# for the oracle's EMAs to differ from the signal service's. Fields a table
+# does not have (the timestamps bench/realtime.sh reads) are skipped.
 set -euo pipefail
 
 consumers=${CH_KAFKA_CONSUMERS:-4}
@@ -21,7 +22,8 @@ SETTINGS kafka_broker_list = '$broker', kafka_topic_list = '$1',
          kafka_group_name = '$2', kafka_format = 'JSONEachRow',
          kafka_num_consumers = $3, kafka_thread_per_consumer = 1,
          kafka_handle_error_mode = 'stream',
-         input_format_json_read_numbers_as_strings = 1, precise_float_parsing = 1
+         input_format_json_read_numbers_as_strings = 1, precise_float_parsing = 1,
+         input_format_skip_unknown_fields = 1
 SQL
 }
 

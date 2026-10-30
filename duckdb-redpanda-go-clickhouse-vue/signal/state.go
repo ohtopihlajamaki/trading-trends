@@ -31,6 +31,7 @@ type bar struct {
 	open, high, low, close float64
 	trades                 uint32
 	ema38, ema100          float64
+	triggerSentMs          int64 // sent_ms of the record that closed the window
 }
 
 type crossover struct {
@@ -39,6 +40,7 @@ type crossover struct {
 	side          string // BUY or SELL
 	close         float64
 	ema38, ema100 float64
+	triggerSentMs int64
 }
 
 // sink receives what closing a window produces.
@@ -70,6 +72,7 @@ type partition struct {
 	order      []*series // first-seen order, so watermark closes are deterministic
 	wm         int64
 	late       int64
+	sentMs     int64 // sent_ms of the record being applied, for latency breakdowns
 }
 
 func newPartition(firstClose bool) *partition {
@@ -83,6 +86,7 @@ func windowStart(ts int64) int64 {
 // add applies one record. A window closes when a later event arrives for its
 // symbol, or when the partition watermark passes the window's end.
 func (p *partition) add(t *tick, out sink) {
+	p.sentMs = t.SentMs
 	if t.Symbol == "" {
 		p.advance(t.TsMs, out)
 		return
@@ -157,7 +161,7 @@ func (p *partition) close(s *series, out sink) {
 	s.seeded = true
 	s.open = false
 	out.bar(&bar{symbol: s.symbol, windowStart: s.ws, open: s.o, high: s.h, low: s.l, close: c,
-		trades: s.trades, ema38: s.ema38, ema100: s.ema100})
+		trades: s.trades, ema38: s.ema38, ema100: s.ema100, triggerSentMs: p.sentMs})
 
 	var rel int8
 	switch {
@@ -178,6 +182,6 @@ func (p *partition) close(s *series, out sink) {
 	s.rel = rel
 	if side != "" {
 		out.signal(&crossover{symbol: s.symbol, windowStart: s.ws, side: side, close: c,
-			ema38: s.ema38, ema100: s.ema100})
+			ema38: s.ema38, ema100: s.ema100, triggerSentMs: p.sentMs})
 	}
 }

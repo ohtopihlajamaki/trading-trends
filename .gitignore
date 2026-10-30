@@ -4,3 +4,4 @@ refined
 .env
 .DS_Store
 node_modules
+duckdb-redpanda-go-clickhouse-vue/bench/.realtime/

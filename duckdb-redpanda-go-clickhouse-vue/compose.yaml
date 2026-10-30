@@ -136,6 +136,7 @@ services:
       REPLAY_THREADS: ${REPLAY_THREADS:-}
       REPLAY_SPEED: ${REPLAY_SPEED}
       REPLAY_FROM: ${REPLAY_FROM:-}
+      REPLAY_UNTIL: ${REPLAY_UNTIL:-}
     volumes:
       - ${DATA_DIR}/ticks:/data/ticks:ro
     depends_on:
@@ -192,6 +193,19 @@ services:
       - ui-node-modules:/app/node_modules
     depends_on:
       - gateway
+
+  # WebSocket client for bench/realtime.sh: records what a UI would receive
+  probe:
+    profiles: [bench]
+    build:
+      context: ./bench/probe
+      <<: *go-build
+    # The script sets PROBE_USER to the host user, so the raw files it writes
+    # into the bind mount stay readable and removable on Linux
+    user: ${PROBE_USER:-65534}
+    working_dir: /work
+    volumes:
+      - ./bench/.realtime:/work
 
   prometheus:
     profiles: [observe]

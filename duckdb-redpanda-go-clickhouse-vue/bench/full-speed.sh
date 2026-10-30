@@ -6,14 +6,12 @@
 # Usage: bench/full-speed.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
-now() { perl -MTime::HiRes=time -e 'printf "%.3f", time'; }
-ch() { docker compose exec -T clickhouse sh -c 'clickhouse client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" "$@"' -- "$@"; }
-committed() { docker compose exec -T redpanda rpk group describe "$1" 2>/dev/null | awk -v t="$2" '$1 == t && $3 ~ /^[0-9]+$/ { s += $3 } END { print s + 0 }'; }
+. bench/lib.sh
 
 t0=$(now)
 docker compose --profile replay run --rm --no-deps -e DAYS="${DAYS:-081121}" -e REPLAY_SPEED=max replayer 2>&1 | grep -E "replaying|done:"
 t_rep=$(now)
-total=$(docker compose exec -T redpanda rpk topic describe ticks -p | awk 'NR > 1 { s += $NF } END { print s }')
+total=$(offsets ticks)
 echo "ticks topic records: $total"
 t_sig=""; t_ch=""
 while [[ -z "$t_sig" || -z "$t_ch" ]]; do
@@ -26,7 +24,7 @@ while [[ -z "$t_sig" || -z "$t_ch" ]]; do
 done
 # Downstream outputs: wait until ClickHouse has every bars_ema/signals record
 for topic in bars_ema signals; do
-  want=$(docker compose exec -T redpanda rpk topic describe $topic -p | awk 'NR > 1 { s += $NF } END { print s + 0 }')
+  want=$(offsets $topic)
   until (( $(ch -q "SELECT count() FROM $topic") == want )); do sleep 0.5; done
 done
 t_out=$(now)

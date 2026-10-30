@@ -45,7 +45,7 @@ week on the Linux box). Replaying the same days twice appends them twice; start 
 | `clickhouse/` | Schema and Kafka tables (`init/`), `oracle.sql`, `check.sh`, `backfill.sql` |
 | `redpanda/` | Topic creation |
 | `observe/` | Prometheus and Grafana provisioning |
-| `bench/` | `replay-speeds.sh` (producer speed sweep, results in `bench/results/`), `full-speed.sh` (time every stage of a full-speed replay), `reset-signal.sh`, `signal-drain.sh K` (time K signal instances draining the `ticks` topic) |
+| `bench/` | `replay-speeds.sh` (producer speed sweep, results in `bench/results/`), `full-speed.sh` (time every stage of a full-speed replay), `realtime.sh` (performance test, below; its WebSocket client is `probe/`), `reset-signal.sh`, `signal-drain.sh K` (time K signal instances draining the `ticks` topic) |
 
 ## Checks
 
@@ -71,6 +71,33 @@ bench/signal-drain.sh 4        # reset the signal stage, start 4 instances, time
 
 Other knobs: `PREP_THREADS`, `REPLAY_WORKERS`, `REPLAY_THREADS`, `REDPANDA_SMP`, and `CH_KAFKA_CONSUMERS` (then re-run
 `docker compose exec clickhouse bash /docker-entrypoint-initdb.d/20-kafka.sh`).
+
+## Performance test
+
+`bench/realtime.sh` measures how the pipeline performs on the week's own load and writes CSV and Markdown
+tables, with a description of the machine and the git commit, to `bench/results/`:
+
+1. **Real time.** Picks 5-minute windows by how many ticks they hold. The week has two levels: about 3k
+   ticks per window outside Xetra hours and about 100k during them. So the default points are p10 (quiet),
+   p35 (morning before Xetra opens), p50 (typical trading), p99 and p100 (the busiest window, the 17:35
+   closing auction). Each window is replayed at 1×. The test reports the latency from the window's end to a
+   UI client receiving its bars and BUY/SELL signals, split into three stages: the wait for the tick that
+   closes the window, the signal service, and the gateway with its flush interval.
+2. **Load sweep.** Replays the hour around the p50 and p100 windows at 10× to 3000× real time, and reports
+   the highest speed whose p95 latency stays within 1 s.
+
+Each run starts from empty volumes and fast-forwards the day up to the measured span, so the EMAs are warm.
+It then waits until every service has caught up and replays the span while `bench/probe` records what the
+gateway sends. The test uses its own Compose project (`stock-signals-rt`), so stop the usual stack first.
+
+```sh
+bench/realtime.sh                                   # both parts, all prepped days: about 75 min
+MODE=sweep SIGNAL_INSTANCES="1 2 4" bench/realtime.sh   # scaling of the signal service
+MODE=realtime REALTIME_SPEED=20 bench/realtime.sh   # 5-minute smoke test (not real time)
+```
+
+Needs Docker, bash and perl, and the days prepped (`DAYS` limits the test to some of them). Other knobs are
+listed at the top of the script. Commit the result files so runs on different machines can be compared.
 
 ## Platform notes
 
