@@ -59,6 +59,10 @@ var (
 		Name: "gateway_signal_latency_seconds", Help: "From the signal service emitting a signal to the gateway receiving it.",
 		Buckets: prometheus.ExponentialBuckets(0.001, 2, 18),
 	})
+	e2eLatency = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name: "gateway_e2e_latency_seconds", Help: "From the closing tick sent to the gateway receiving the signal.",
+		Buckets: prometheus.ExponentialBuckets(0.001, 2, 18),
+	})
 	historySeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name: "gateway_http_seconds", Help: "HTTP endpoint latency, ClickHouse included.",
 		Buckets: prometheus.ExponentialBuckets(0.001, 2, 14),
@@ -113,10 +117,11 @@ type gateway struct {
 	hub *hub
 	ch  *http.Client
 
-	bars, signals atomic.Int64 // since the last stats tick
-	windowMs      atomic.Int64 // latest window start seen
-	latencyMaxUs  atomic.Int64 // largest signal latency since the last stats tick
-	ready         atomic.Bool  // partitions assigned: live records will arrive
+	bars, signals   atomic.Int64 // since the last stats tick
+	windowMs        atomic.Int64 // latest window start seen
+	latencyMaxUs    atomic.Int64 // largest signal latency since the last stats tick
+	e2eLatencyMaxUs atomic.Int64 // largest end-to-end signal latency since the last stats tick
+	ready           atomic.Bool  // partitions assigned: live records will arrive
 }
 
 // consume reads both topics from the end and fans records out to the hub.
@@ -145,6 +150,7 @@ func (g *gateway) consume(ctx context.Context) error {
 	var head struct {
 		Symbol        string `json:"symbol"`
 		WindowStartMs int64  `json:"window_start_ms"`
+		TriggerSentMs int64  `json:"trigger_sent_ms"`
 		EmittedMs     int64  `json:"emitted_ms"`
 	}
 	for {
@@ -155,7 +161,7 @@ func (g *gateway) consume(ctx context.Context) error {
 		fetches.EachError(func(t string, p int32, err error) { log.Printf("fetch %s/%d: %v", t, p, err) })
 		now := time.Now().UnixMilli()
 		fetches.EachRecord(func(r *kgo.Record) {
-			head.Symbol, head.WindowStartMs, head.EmittedMs = "", 0, 0
+			head.Symbol, head.WindowStartMs, head.TriggerSentMs, head.EmittedMs = "", 0, 0, 0
 			if json.Unmarshal(r.Value, &head) != nil {
 				return
 			}
@@ -171,9 +177,20 @@ func (g *gateway) consume(ctx context.Context) error {
 			g.signals.Add(1)
 			if head.EmittedMs > 0 {
 				lat := now - head.EmittedMs
-				signalLatency.Observe(float64(lat) / 1000)
-				if us := lat * 1000; us > g.latencyMaxUs.Load() {
-					g.latencyMaxUs.Store(us)
+				if lat > 0 {
+					signalLatency.Observe(float64(lat) / 1000)
+					if us := lat * 1000; us > g.latencyMaxUs.Load() {
+						g.latencyMaxUs.Store(us)
+					}
+				}
+			}
+			if head.TriggerSentMs > 0 {
+				e2e := now - head.TriggerSentMs
+				if e2e > 0 {
+					e2eLatency.Observe(float64(e2e) / 1000)
+					if us := e2e * 1000; us > g.e2eLatencyMaxUs.Load() {
+						g.e2eLatencyMaxUs.Store(us)
+					}
 				}
 			}
 			g.hub.signal(r.Value)
@@ -194,12 +211,13 @@ func (g *gateway) statsLoop(ctx context.Context) {
 			secs := now.Sub(last).Seconds()
 			last = now
 			msg, _ := json.Marshal(map[string]any{
-				"t_ms":          now.UnixMilli(),
-				"bars_per_s":    math.Round(float64(g.bars.Swap(0)) / secs),
-				"signals_per_s": math.Round(float64(g.signals.Swap(0)) / secs),
-				"window_ms":     g.windowMs.Load(),
-				"latency_ms":    float64(g.latencyMaxUs.Swap(0)) / 1000,
-				"instance":      g.cfg.instance,
+				"t_ms":           now.UnixMilli(),
+				"bars_per_s":     math.Round(float64(g.bars.Swap(0)) / secs),
+				"signals_per_s":  math.Round(float64(g.signals.Swap(0)) / secs),
+				"window_ms":      g.windowMs.Load(),
+				"latency_ms":     float64(g.latencyMaxUs.Swap(0)) / 1000,
+				"e2e_latency_ms": float64(g.e2eLatencyMaxUs.Swap(0)) / 1000,
+				"instance":       g.cfg.instance,
 			})
 			g.hub.stats(msg)
 		}

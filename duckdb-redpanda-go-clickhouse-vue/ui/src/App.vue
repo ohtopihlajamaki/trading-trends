@@ -12,6 +12,7 @@ const stored = (() => { try { return localStorage.getItem('symbol') ?? '' } catc
 const selected = ref(stored)
 const status = ref('connecting')
 const stats = ref(null)
+const lastE2ELatency = ref(null)
 const error = ref('')
 const chart = ref(null)
 const grid = ref(null)
@@ -72,6 +73,7 @@ function onFrame(f) {
     if (b.window_start_ms < (recentBars.at(-1)?.window_start_ms ?? 0)) {
       recentBars = []
       recentSignals = []
+      lastE2ELatency.value = null
     }
     recentBars.push(b)
     if (recentBars.length > RECENT) recentBars.shift()
@@ -88,6 +90,9 @@ function onFrame(f) {
   }
   if (f.stats) {
     stats.value = f.stats
+    if (f.stats.e2e_latency_ms > 0) {
+      lastE2ELatency.value = f.stats.e2e_latency_ms
+    }
     throughput.value.add(f.stats)
   }
 }
@@ -122,6 +127,7 @@ const fmt = (n) => (n == null ? '–' : n.toLocaleString())
       <span class="status" :class="status">{{ status }}</span>
       <dl class="kpis">
         <div><dt>Replay clock</dt><dd>{{ stats?.window_ms ? formatDayHM(stats.window_ms) : '–' }}</dd></div>
+        <div><dt>E2E latency</dt><dd>{{ lastE2ELatency != null ? `${fmt(Math.round(lastE2ELatency))} ms` : '–' }}</dd></div>
         <div><dt>Bars/s</dt><dd>{{ fmt(stats?.bars_per_s) }}</dd></div>
         <div><dt>Signals/s</dt><dd>{{ fmt(stats?.signals_per_s) }}</dd></div>
         <div><dt>Signal latency</dt><dd>{{ stats ? `${fmt(Math.round(stats.latency_ms))} ms` : '–' }}</dd></div>
