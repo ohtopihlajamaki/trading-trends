@@ -5,3 +5,5 @@ refined
 .DS_Store
 node_modules
 duckdb-redpanda-go-clickhouse-vue/bench/.realtime/
+# Data the showcase steps write; each step's run.sh makes it again
+duckdb-redpanda-go-clickhouse-vue/showcase/*/output/

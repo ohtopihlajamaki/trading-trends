@@ -1,0 +1,2 @@
+# Raw inputs are byte-for-byte cuts of the DEBS files: CRLF preamble, LF data
+**/input/*.csv -text
