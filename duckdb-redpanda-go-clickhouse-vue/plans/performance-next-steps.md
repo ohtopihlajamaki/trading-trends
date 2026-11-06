@@ -20,6 +20,8 @@ implementation 12, report 12, teamwork 2). The numbers come from a MacBook Air M
 
 ## Spec deviation 1: EMA start
 
+> **Decided 2026-11-06:** keep `first_close`. Realistically the previous EMA would come from the end of the previous week; the professor confirmed either start is acceptable if the report documents it. The analysis below stays as background for that paragraph. Current plan: `scalability-plan.md`.
+
 **Spec (section 3.2):** the EMA of the window before a symbol's first is 0, so the first window gives
 EMA38 = 2/39·c ≈ 0.051·c and EMA100 = 2/101·c ≈ 0.020·c, where c is the window's close.
 
