@@ -8,6 +8,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 . bench/lib.sh
 
+stats_start full-speed
+trap stats_stop EXIT
 t0=$(now)
 docker compose --profile replay run --rm --no-deps -e DAYS="${DAYS:-081121}" -e REPLAY_SPEED=max replayer 2>&1 | grep -E "replaying|done:"
 t_rep=$(now)

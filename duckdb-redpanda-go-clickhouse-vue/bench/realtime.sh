@@ -92,7 +92,9 @@ echo
 mkdir -p "$work" bench/results
 probe=rt-probe
 cleanup() { docker rm -f "$probe" >/dev/null 2>&1 || true; }
-trap cleanup EXIT
+# fresh() calls cleanup before every run; the resource sampler runs throughout
+trap 'cleanup; stats_stop' EXIT
+stats_start "realtime-$mode"
 
 echo "Building images ..."
 docker compose --profile replay --profile bench build replayer signal gateway probe >/dev/null 2>&1

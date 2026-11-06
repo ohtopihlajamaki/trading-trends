@@ -4,7 +4,8 @@
 #
 # - Redpanda without dev-container mode, which disables fsync and enables
 #   write caching and so inflates throughput.
-# - Every service pinned to its own cores (CPUS_* in .env).
+# - Every service pinned to its own cores (CPUS_* in .env); probe, Prometheus
+#   and Grafana share the gateway's.
 # - No memory limits below the host; ClickHouse takes what is left.
 # - No fixed host ports on the scaled services.
 
@@ -35,3 +36,14 @@ services:
   gateway:
     cpuset: ${CPUS_GATEWAY}
     ports: !reset []
+
+  # Clients and monitoring share the gateway's cores, so they never run on
+  # the cores being measured (signal above all)
+  probe:
+    cpuset: ${CPUS_GATEWAY}
+
+  prometheus:
+    cpuset: ${CPUS_GATEWAY}
+
+  grafana:
+    cpuset: ${CPUS_GATEWAY}

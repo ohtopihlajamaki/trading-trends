@@ -578,6 +578,91 @@
           "legendFormat": "{{job}} {{instance}}"
         }
       ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Ticks per partition (skew)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 51,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "hidden",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (partition) (rate(signal_ticks_total[15s]))",
+          "legendFormat": "p{{partition}}"
+        },
+        {
+          "refId": "B",
+          "expr": "max(sum by (partition) (rate(signal_ticks_total[15s]))) / avg(sum by (partition) (rate(signal_ticks_total[15s])))",
+          "legendFormat": "max / mean"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "CPU per Go service (1 = one core)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 51,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(process_cpu_seconds_total{job=~\"signal|gateway|replayer\"}[15s])",
+          "legendFormat": "{{job}} {{instance}}"
+        }
+      ]
     }
   ]
 }

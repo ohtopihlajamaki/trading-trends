@@ -5,9 +5,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 k=${1:?usage: $0 K}
+. bench/lib.sh
 
 bench/reset-signal.sh
 records=$(docker compose exec -T redpanda rpk topic describe ticks -p | awk 'NR > 1 { s += $NF } END { print s }')
+stats_start "signal-drain-k$k"
+trap stats_stop EXIT
 start=$(date +%s.%N)
 docker compose up -d --scale signal="$k" signal >/dev/null 2>&1
 # Drained when the committed offsets add up to the topic (TOTAL-LAG alone

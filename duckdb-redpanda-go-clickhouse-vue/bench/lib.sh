@@ -35,3 +35,19 @@ committed() {  # group, topic: sum of the group's committed offsets
   docker compose exec -T redpanda rpk group describe "$1" 2>/dev/null \
     | awk -v t="$2" '$1 == t && $3 ~ /^[0-9]+$/ { s += $3 } END { print s + 0 }'
 }
+
+# --- Resource samples (bench/stats.sh) ---------------------------------------
+stats_pid=""
+stats_start() {  # name: sample docker stats in the background until stats_stop
+  local out="bench/results/stats-$1-$(hostname -s 2>/dev/null || hostname)-$(date +%Y%m%d-%H%M).csv"
+  mkdir -p bench/results
+  bench/stats.sh "$out" &
+  stats_pid=$!
+  echo "Resource samples: $out"
+}
+stats_stop() {
+  [[ -n "$stats_pid" ]] || return 0
+  kill "$stats_pid" 2>/dev/null || true
+  wait "$stats_pid" 2>/dev/null || true
+  stats_pid=""
+}

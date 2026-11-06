@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	_ "net/http/pprof" // /debug/pprof on the metrics port, for bench/profile-signal.sh
 	"os"
 	"os/signal"
 	"strconv"
@@ -30,9 +31,11 @@ import (
 )
 
 var (
-	ticksIn = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "signal_ticks_total", Help: "Ticks and watermarks processed (excluding state rebuilds).",
-	})
+	// Labelled by ticks partition, so load per partition (skew) and per
+	// instance (sum by instance) can both be read from one series
+	ticksIn = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "signal_ticks_total", Help: "Ticks and watermarks processed (excluding state rebuilds), by ticks partition.",
+	}, []string{"partition"})
 	barsOut = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "signal_bars_total", Help: "Bars emitted to bars_ema.",
 	})
@@ -307,7 +310,7 @@ func (a *app) run(ctx context.Context) error {
 					tickLatency.Observe(float64(nowMs-t.SentMs) / 1000)
 				}
 			}
-			ticksIn.Add(float64(len(fp.Records)))
+			ticksIn.WithLabelValues(strconv.Itoa(int(fp.Partition))).Add(float64(len(fp.Records)))
 			lateTicks.Add(float64(st.late - late))
 			last := fp.Records[len(fp.Records)-1].Offset
 			partitionLag.WithLabelValues(strconv.Itoa(int(fp.Partition))).Set(float64(fp.HighWatermark - last - 1))
@@ -345,6 +348,8 @@ func main() {
 	defer stop()
 
 	go func() {
+		// The default mux also serves /debug/pprof (imported above). The port
+		// is not published to the host; reach it from inside the network.
 		http.Handle("/metrics", promhttp.Handler())
 		http.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok\n")) })
 		log.Println(http.ListenAndServe(cfg.metricsAddr, nil))
