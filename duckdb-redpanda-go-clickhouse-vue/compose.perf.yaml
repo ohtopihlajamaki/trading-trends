@@ -35,3 +35,8 @@ services:
   gateway:
     cpuset: ${CPUS_GATEWAY}
     ports: !reset []
+
+  # The benchmark's WebSocket client, part of the load generator: keep it off
+  # the pipeline's cores (by default it shares the replayer's)
+  probe:
+    cpuset: ${CPUS_PROBE:-${CPUS_REPLAYER}}
