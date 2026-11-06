@@ -137,6 +137,7 @@ services:
       REPLAY_SPEED: ${REPLAY_SPEED}
       REPLAY_FROM: ${REPLAY_FROM:-}
       REPLAY_UNTIL: ${REPLAY_UNTIL:-}
+      REPLAY_COPIES: ${REPLAY_COPIES:-1}
     volumes:
       - ${DATA_DIR}/ticks:/data/ticks:ro
     depends_on:
@@ -164,6 +165,8 @@ services:
       CLICKHOUSE_URL: http://clickhouse:8123
       CLICKHOUSE_USER: ${CLICKHOUSE_USER}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      WS_MAX_PENDING_BARS: ${WS_MAX_PENDING_BARS:-20000}
+      WS_MAX_PENDING_SIGNALS: ${WS_MAX_PENDING_SIGNALS:-5000}
     # One fixed port for the dev setup; compose.perf.yaml removes it so the
     # gateway can scale. The UI reaches every instance through the network.
     ports:

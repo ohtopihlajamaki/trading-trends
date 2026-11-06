@@ -30,6 +30,10 @@
 #   SIGNAL_INSTANCES="1"  e.g. "1 2 4"; the real-time part uses the first
 #   LATENCY_SLO_MS=1000   p95 system latency a sweep step must stay within
 #   COMPOSE_FILE          e.g. compose.yaml:compose.perf.yaml on the Linux box
+#   REPLAY_COPIES         size of the exchange (default from .env, else 1): every
+#                         tick replayed k times; expected ticks and bars scale with it
+#   WS_MAX_PENDING_BARS   the gateway's per-client bar limit; default scales with
+#                         REPLAY_COPIES (20,000, or 10,000 per copy from 3 copies)
 #
 # The test uses its own Compose project (stock-signals-rt), so the pipeline's
 # usual volumes are not touched; stop the usual stack first, as both publish
@@ -51,6 +55,15 @@ span_min=${SWEEP_SPAN_MIN:-60}
 instances=${SIGNAL_INSTANCES:-1}
 slo=${LATENCY_SLO_MS:-1000}
 work=bench/.realtime
+copies=${REPLAY_COPIES:-$(awk -F= '$1 == "REPLAY_COPIES" { print $2 }' .env 2>/dev/null)}
+copies=${copies:-1}
+[[ "$copies" =~ ^[1-9][0-9]*$ ]] || { echo "REPLAY_COPIES must be a positive integer" >&2; exit 1; }
+# The probe subscribes to every symbol, so each window close sends it one bar
+# per symbol (about 4,840 per copy) in one frame. The gateway's per-client
+# limits must hold that burst with room to spare, yet a full frame must stay
+# within the probe's 64 MiB read limit (about 250,000 bars)
+export WS_MAX_PENDING_BARS=${WS_MAX_PENDING_BARS:-$(( copies > 2 ? 10000 * copies : 20000 ))}
+export WS_MAX_PENDING_SIGNALS=${WS_MAX_PENDING_SIGNALS:-$(( 5000 * copies ))}
 case $mode in all | realtime | sweep) ;; *) echo "MODE must be all, realtime or sweep" >&2; exit 1 ;; esac
 (( span_min >= 15 && span_min % 5 == 0 )) || { echo "SWEEP_SPAN_MIN must be a multiple of 5, at least 15" >&2; exit 1; }
 
@@ -81,7 +94,7 @@ mem_gib=$(awk -v b="$docker_mem" 'BEGIN { printf "%.1f", b / 1073741824 }')
 compose_files=${COMPOSE_FILE:-compose.yaml}
 commit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 git diff --quiet HEAD -- . 2>/dev/null || commit="$commit-dirty"
-machine_hdr="date,host,host_os,cpu,host_cores,docker_cpus,docker_mem_gib,docker_os,docker_version,arch,compose,git_commit,flush_ms"
+machine_hdr="date,host,host_os,cpu,host_cores,docker_cpus,docker_mem_gib,docker_os,docker_version,arch,compose,git_commit,flush_ms,replay_copies,ws_max_pending_bars"
 stamp=$(date +%Y%m%d-%H%M)
 
 echo "Host:    $host, $os, ${cpu:-unknown CPU}, $cores cores"
@@ -130,7 +143,7 @@ caught_up() {
 
 replay() {  # day, from HH:MM:SS, until HH:MM:SS, speed -> log on stdout, host time on each line
   docker compose --profile replay run --rm --no-deps -e DAYS="$1" -e REPLAY_FROM="$2" \
-    -e REPLAY_UNTIL="$3" -e REPLAY_SPEED="$4" replayer 2>&1 | while IFS= read -r line; do echo "$(now) $line"; done
+    -e REPLAY_UNTIL="$3" -e REPLAY_SPEED="$4" -e REPLAY_COPIES="$copies" replayer 2>&1 | while IFS= read -r line; do echo "$(now) $line"; done
 }
 
 # measure TAG DAY K FROM_MS UNTIL_MS SPEED WIN_FROM_MS WIN_TO_MS: one run; sets
@@ -150,7 +163,7 @@ measure() {
   caught_up
 
   rm -f "$work/raw-$tag.csv" "$work/raw-$tag.csv.ready"
-  docker compose --profile bench run -d --no-deps --name "$probe" -e SYMBOLS_FILE="/work/symbols-$day.json" \
+  docker compose --profile bench run -d --no-deps --name "$probe" -e SYMBOLS_FILE="/work/symbols-$day-x$copies.json" \
     -e OUT="/work/raw-$tag.csv" probe listen >/dev/null
   until [[ -e "$work/raw-$tag.csv.ready" ]]; do
     (( ++i < 60 )) || { echo "probe did not start: $(docker logs "$probe" 2>&1 | tail -3)" >&2; exit 1; }
@@ -223,8 +236,12 @@ for label in $labels; do
   printf '  %-5s %s  %7s ticks, busiest second %s\n' "$label" "$(berlin "$w" '%a %d.%m. %H:%M')" "$n" "$peak"
 done
 for day in $(cut -f2 "$work/windows.tsv" | sort -u); do
-  [[ -s "$work/symbols-$day.json" ]] || ch -q "SELECT toJSONString(groupUniqArray(symbol))
-    FROM file('data/ticks/bucket=*/$day.parquet') FORMAT TSVRaw" >"$work/symbols-$day.json"
+  # Every symbol of the day, and its copies c1:SYMBOL .. c<k-1>:SYMBOL
+  [[ -s "$work/symbols-$day-x$copies.json" ]] || ch -q "
+    SELECT toJSONString(arrayFlatten(arrayMap(i -> arrayMap(s -> if(i = 0, s, concat('c', toString(i), ':', s)), syms),
+                                              range($copies))))
+    FROM (SELECT groupUniqArray(symbol) AS syms FROM file('data/ticks/bucket=*/$day.parquet'))
+    FORMAT TSVRaw" >"$work/symbols-$day-x$copies.json"
 done
 echo
 
@@ -232,8 +249,11 @@ window() {  # label -> sets day w n syms peak span_ticks span_bars
   local row
   row=$(awk -F'\t' -v l="$1" '$1 == l' "$work/windows.tsv")
   IFS=$'\t' read -r _ day w n syms peak span_ticks span_bars <<<"$row"
+  # The replay sends every tick $copies times, under as many symbols
+  n=$((n * copies)) syms=$((syms * copies)) peak=$((peak * copies))
+  span_ticks=$((span_ticks * copies)) span_bars=$((span_bars * copies))
 }
-machine() { echo "$(date +%Y-%m-%dT%H:%M:%S),$host,$os,$cpu,$cores,$docker_cpus,$mem_gib,$docker_os,$docker_ver,$arch,$compose_files,$commit,$flush_ms"; }
+machine() { echo "$(date +%Y-%m-%dT%H:%M:%S),$host,$os,$cpu,$cores,$docker_cpus,$mem_gib,$docker_os,$docker_ver,$arch,$compose_files,$commit,$flush_ms,$copies,$WS_MAX_PENDING_BARS"; }
 
 # --- 1. Real time ------------------------------------------------------------
 if [[ $mode != sweep ]]; then

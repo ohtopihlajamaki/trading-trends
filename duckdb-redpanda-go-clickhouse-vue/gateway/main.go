@@ -109,6 +109,19 @@ func loadConfig() (config, error) {
 		return c, fmt.Errorf("FLUSH_MS must be a positive integer")
 	}
 	c.flushInterval = time.Duration(ms) * time.Millisecond
+	// Set once here, before any client connects (hub.go)
+	for _, l := range []struct {
+		name string
+		v    *int
+	}{{"WS_MAX_PENDING_BARS", &maxPendingBars}, {"WS_MAX_PENDING_SIGNALS", &maxPendingSignals}} {
+		if s := os.Getenv(l.name); s != "" {
+			n, err := strconv.Atoi(s)
+			if err != nil || n < 1 {
+				return c, fmt.Errorf("%s must be a positive integer", l.name)
+			}
+			*l.v = n
+		}
+	}
 	return c, nil
 }
 
@@ -229,7 +242,10 @@ func (g *gateway) serveWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	conn.SetReadLimit(1 << 20)
+	// The largest message a client sends is its subscription. One to every
+	// symbol takes about 15 bytes per symbol: 1.4 MB at REPLAY_COPIES=20, so
+	// 16 MiB leaves room for about a million symbols
+	conn.SetReadLimit(16 << 20)
 	c := &client{conn: conn, symbols: map[string]bool{}, notified: make(chan struct{}, 1)}
 	g.hub.add(c)
 	defer g.hub.remove(c)
@@ -374,14 +390,15 @@ func (g *gateway) recentSignals(w http.ResponseWriter, r *http.Request) error {
 	return g.query(r.Context(), w, recentSignalsSQL, map[string]string{"limit": limit})
 }
 
-// Most traded first
+// Most traded first. A copy from REPLAY_COPIES (c7:SYMBOL) takes its
+// original's row of instruments.
 const symbolsSQL = `
 SELECT b.symbol AS symbol, i.sectype AS sectype, i.exchange AS exchange, b.bars AS bars, b.trades AS trades,
        b.last_close AS last_close, b.last_ms AS last_ms, s.signals AS signals
-FROM (SELECT symbol, count() AS bars, sum(trades) AS trades, argMax(close, window_start) AS last_close,
-             toUnixTimestamp(max(window_start)) * 1000 AS last_ms
+FROM (SELECT symbol, replaceRegexpOne(symbol, '^c[0-9]+:', '') AS base, count() AS bars, sum(trades) AS trades,
+             argMax(close, window_start) AS last_close, toUnixTimestamp(max(window_start)) * 1000 AS last_ms
       FROM bars_ema FINAL GROUP BY symbol) AS b
-LEFT JOIN (SELECT symbol, sectype, exchange FROM instruments FINAL) AS i ON i.symbol = b.symbol
+LEFT JOIN (SELECT symbol, sectype, exchange FROM instruments FINAL) AS i ON i.symbol = b.base
 LEFT JOIN (SELECT symbol, uniqExact(window_start) AS signals FROM signals GROUP BY symbol) AS s ON s.symbol = b.symbol
 ORDER BY trades DESC, symbol
 FORMAT JSONColumns`

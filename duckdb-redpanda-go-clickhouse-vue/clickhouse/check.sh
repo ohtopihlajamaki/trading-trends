@@ -70,6 +70,30 @@ check "signals only in oracle.sql" "$only_oracle" 0
 check "signals only in the signal service" "$only_svc" 0
 check "signals with a different side" "$side" 0
 
+# A replay with REPLAY_COPIES=k adds copies c1:SYMBOL .. c<k-1>:SYMBOL of every
+# symbol; each must have exactly its original's bars and signals
+echo "Copies: every copy against its original"
+copy_check() {  # table, columns that must be equal
+  local table=$1 cond="" col copies rows orig bad
+  for col in $2; do cond+=" OR c.$col != o.$col"; done
+  read -r copies rows orig bad <<<"$(ch -q "
+    SELECT uniqExact(extract(c.symbol, '^(c[0-9]+):')), count(),
+           (SELECT count() FROM $table FINAL WHERE NOT match(symbol, '^c[0-9]+:')),
+           countIf(o.symbol = ''$cond)
+    FROM (SELECT *, replaceRegexpOne(symbol, '^c[0-9]+:', '') AS base
+          FROM $table FINAL WHERE match(symbol, '^c[0-9]+:')) AS c
+    LEFT JOIN (SELECT * FROM $table FINAL WHERE NOT match(symbol, '^c[0-9]+:')) AS o
+      ON o.symbol = c.base AND o.window_start = c.window_start")"
+  if (( copies == 0 )); then
+    echo "  ..    no copies in $table"
+    return
+  fi
+  check "$table: rows of $copies copies = $copies x the originals'" "$rows" "$((copies * orig))"
+  check "$table: copy rows missing or different in the original" "$bad" 0
+}
+copy_check bars_ema "open high low close trades ema38 ema100"
+copy_check signals "side close ema38 ema100"
+
 if (( failed )); then
   echo "FAILED (largest EMA difference: $ema_max)"
   exit 1

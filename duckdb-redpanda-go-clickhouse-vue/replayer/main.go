@@ -15,6 +15,12 @@
 // run with REPLAY_FROM at the same time continues the stream (bench/realtime.sh
 // fast-forwards to a window this way, then replays it in real time).
 //
+// REPLAY_COPIES=k replays a k times larger exchange: every tick is produced k
+// times, the first under its own symbol and the others as c1:SYMBOL ..
+// c<k-1>:SYMBOL. A copy keeps the tick's ts_ms, seq and partition, so every
+// partition stays in event order and each copy's bars and signals equal the
+// original's (clickhouse/check.sh checks this). Watermarks are not copied.
+//
 // REPLAY_THREADS caps the OS threads that run Go code at once (GOMAXPROCS);
 // by default the replayer uses every CPU the container has.
 package main
@@ -72,10 +78,12 @@ type config struct {
 	days        []string
 	partitions  int
 	workers     int
-	speed       float64 // multiple of real time; 0 means as fast as possible
-	from        string  // REPLAY_FROM as given, "" for the first tick
-	fromMs      int64   // REPLAY_FROM on the first day, epoch ms; 0 if unset
-	untilMs     int64   // REPLAY_UNTIL on the first day, epoch ms; 0 if unset
+	speed       float64  // multiple of real time; 0 means as fast as possible
+	from        string   // REPLAY_FROM as given, "" for the first tick
+	fromMs      int64    // REPLAY_FROM on the first day, epoch ms; 0 if unset
+	untilMs     int64    // REPLAY_UNTIL on the first day, epoch ms; 0 if unset
+	copies      int      // REPLAY_COPIES: records per tick, 1 = the data as it is
+	prefixes    []string // symbol prefix of each copy; "" for the original
 	metricsAddr string
 }
 
@@ -112,6 +120,13 @@ func loadConfig() (config, error) {
 		if c.speed, err = strconv.ParseFloat(s, 64); err != nil || c.speed <= 0 {
 			return c, fmt.Errorf("REPLAY_SPEED must be max or a positive number, got %q", s)
 		}
+	}
+	if c.copies, err = strconv.Atoi(env("REPLAY_COPIES", "1")); err != nil || c.copies < 1 {
+		return c, fmt.Errorf("REPLAY_COPIES must be a positive integer")
+	}
+	c.prefixes = make([]string, c.copies)
+	for i := 1; i < c.copies; i++ {
+		c.prefixes[i] = "c" + strconv.Itoa(i) + ":"
 	}
 	if len(c.days) == 0 {
 		return c, fmt.Errorf("DAYS is empty")
@@ -318,6 +333,28 @@ func storeMax(v *atomic.Int64, x int64) {
 	}
 }
 
+// produce sends one record to partition p, keyed by its symbol.
+func produce(ctx context.Context, cl *kgo.Client, topic string, p int32, it *item, kind string, st *stats) {
+	rec := &kgo.Record{
+		Topic:     topic,
+		Partition: p,
+		Key:       []byte(it.symbol),
+		Value:     encode(it, time.Now().UnixMilli()),
+	}
+	sent := time.Now()
+	cl.Produce(ctx, rec, func(_ *kgo.Record, err error) {
+		if err != nil {
+			if st.errors.Add(1) == 1 {
+				st.firstErr.Store(err)
+			}
+			produceErrors.Inc()
+			return
+		}
+		produceLatency.Observe(time.Since(sent).Seconds())
+		recordsProduced.WithLabelValues(kind).Inc()
+	})
+}
+
 // run produces everything in h; origin and start anchor the pacing schedule.
 func run(ctx context.Context, cl *kgo.Client, cfg config, h readerHeap, origin int64, start time.Time, st *stats) error {
 	heap.Init(&h)
@@ -342,32 +379,18 @@ func run(ctx context.Context, cl *kgo.Client, cfg config, h readerHeap, origin i
 			}
 		}
 
-		kind := "tick"
 		if it.symbol == "" {
-			kind = "watermark"
-		}
-		rec := &kgo.Record{
-			Topic:     cfg.topic,
-			Partition: int32(b.bucket),
-			Key:       []byte(it.symbol),
-			Value:     encode(&it, time.Now().UnixMilli()),
-		}
-		sent := time.Now()
-		cl.Produce(ctx, rec, func(_ *kgo.Record, err error) {
-			if err != nil {
-				if st.errors.Add(1) == 1 {
-					st.firstErr.Store(err)
-				}
-				produceErrors.Inc()
-				return
-			}
-			produceLatency.Observe(time.Since(sent).Seconds())
-			recordsProduced.WithLabelValues(kind).Inc()
-		})
-		if kind == "tick" {
-			st.ticks.Add(1)
-		} else {
+			produce(ctx, cl, cfg.topic, int32(b.bucket), &it, "watermark", st)
 			st.watermarks.Add(1)
+		} else {
+			// The copies follow the tick at once, in the same partition and with
+			// the same event time, so the partition stays in event order
+			for _, prefix := range cfg.prefixes {
+				c := it
+				c.symbol = prefix + it.symbol
+				produce(ctx, cl, cfg.topic, int32(b.bucket), &c, "tick", st)
+			}
+			st.ticks.Add(int64(cfg.copies))
 		}
 		eventTime.Set(float64(it.tsMs) / 1000)
 		st.eventMs.Store(it.tsMs)
@@ -446,8 +469,9 @@ func main() {
 	if cfg.from != "" {
 		startAt = cfg.from + " Europe/Berlin"
 	}
-	log.Printf("replaying days %s from %s, starting at %s: %d buckets, %d workers, %d threads, speed %s",
-		strings.Join(cfg.days, " "), cfg.dir, startAt, cfg.partitions, cfg.workers, runtime.GOMAXPROCS(0), speed)
+	log.Printf("replaying days %s from %s, starting at %s: %d buckets, %d workers, %d threads, speed %s, %d copies",
+		strings.Join(cfg.days, " "), cfg.dir, startAt, cfg.partitions, cfg.workers, runtime.GOMAXPROCS(0), speed,
+		cfg.copies)
 
 	var st stats
 	start := time.Now()
@@ -504,9 +528,9 @@ func main() {
 			time.Duration(float64(lag)*cfg.speed).Round(time.Second))
 	}
 	// The same in key=value form, for scripts (bench/replay-speeds.sh)
-	log.Printf("summary speed=%s ticks=%d watermarks=%d errors=%d took_s=%.3f ticks_per_s=%.0f planned_s=%.3f max_lag_ms=%.1f",
+	log.Printf("summary speed=%s ticks=%d watermarks=%d errors=%d took_s=%.3f ticks_per_s=%.0f planned_s=%.3f max_lag_ms=%.1f copies=%d",
 		speedArg, n, st.watermarks.Load(), st.errors.Load(), elapsed.Seconds(),
-		float64(n)/elapsed.Seconds(), sched.Seconds(), float64(lag)/float64(time.Millisecond))
+		float64(n)/elapsed.Seconds(), sched.Seconds(), float64(lag)/float64(time.Millisecond), cfg.copies)
 	failed := false
 	for err := range errs {
 		log.Print(err)

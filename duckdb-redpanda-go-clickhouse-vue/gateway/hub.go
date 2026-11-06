@@ -13,7 +13,10 @@ import (
 
 // Per-client limits on what waits for the next frame; past them the oldest
 // entries are dropped and counted, so a slow browser cannot stall the hub.
-const (
+// WS_MAX_PENDING_BARS and WS_MAX_PENDING_SIGNALS set them at start-up. A
+// client subscribed to every symbol gets one bar per symbol at each window
+// close, all within one frame, so the bar limit must exceed that burst.
+var (
 	maxPendingBars    = 20000
 	maxPendingSignals = 5000
 )
