@@ -81,6 +81,48 @@ func TestLateTickIsDropped(t *testing.T) {
 	}
 }
 
+func TestOwnWatermarkClosesImmediatelyRegardlessOfAllowedLateness(t *testing.T) {
+	// Partition has 1000ms allowed lateness
+	p, r := newPartition(true, 1000), &recorder{}
+	p.add(&tick{Symbol: "A", Last: 10, TsMs: t0 + 1000, Seq: 1}, r)
+	if len(r.bars) != 0 {
+		t.Fatalf("window should be open")
+	}
+	// Stock A gets a trade in the next window (min5(1) + 50ms)
+	p.add(&tick{Symbol: "A", Last: 12, TsMs: min5(1) + 50, Seq: 2}, r)
+	// Window 0 for A must close immediately, even though partition watermark hasn't crossed min5(1) + 1000ms
+	if len(r.bars) != 1 {
+		t.Fatalf("want 1 bar closed immediately by own watermark, got %d", len(r.bars))
+	}
+	if r.bars[0].close != 10 {
+		t.Fatalf("want close 10, got %v", r.bars[0].close)
+	}
+}
+
+func TestOutOfOrderTickWithinGracePeriodIsAccepted(t *testing.T) {
+	// 1000ms allowed lateness
+	p, r := newPartition(true, 1000), &recorder{}
+	// Stock A opens window 0
+	p.add(&tick{Symbol: "A", Last: 10, TsMs: t0 + 1000, Seq: 1}, r)
+	// Stock B makes a trade 10ms into window 1, advancing partition watermark to min5(1) + 10
+	p.add(&tick{Symbol: "B", Last: 50, TsMs: min5(1) + 10, Seq: 2}, r)
+	// Stock A receives a late trade stamped 5ms before window 0 ended (min5(1) - 5)
+	p.add(&tick{Symbol: "A", Last: 11, TsMs: min5(1) - 5, Seq: 3}, r)
+	// Must not be dropped as late!
+	if p.late != 0 {
+		t.Fatalf("want 0 late ticks within grace period, got %d", p.late)
+	}
+	// Watermark reaches min5(1) + 1000ms -> timeout closes window 0
+	p.add(&tick{Symbol: "B", Last: 51, TsMs: min5(1) + 1000, Seq: 4}, r)
+	if len(r.bars) < 1 {
+		t.Fatalf("want bars closed, got %d", len(r.bars))
+	}
+	// The late trade's price 11 must be the closing price!
+	if r.bars[0].close != 11 {
+		t.Fatalf("want close 11 from the late trade, got %v", r.bars[0].close)
+	}
+}
+
 func TestEMAFormula(t *testing.T) {
 	p, r := newPartition(true), &recorder{}
 	closes := []float64{100, 110, 105}

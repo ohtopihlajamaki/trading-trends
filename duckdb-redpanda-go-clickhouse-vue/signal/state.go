@@ -55,6 +55,7 @@ type series struct {
 
 	open              bool
 	ws                int64 // start of the open window
+	lastClosedWs      int64 // start of the last closed window
 	o, h, l, c        float64
 	firstTs, lastTs   int64
 	firstSeq, lastSeq uint64
@@ -67,24 +68,35 @@ type series struct {
 // partition holds every symbol of one ticks partition. Its records arrive in
 // event order, so the highest event time seen is the partition watermark.
 type partition struct {
-	firstClose bool // seed both EMAs with the first close (else with zero)
-	syms       map[string]*series
-	order      []*series // first-seen order, so watermark closes are deterministic
-	wm         int64
-	late       int64
-	sentMs     int64 // sent_ms of the record being applied, for latency breakdowns
+	firstClose      bool // seed both EMAs with the first close (else with zero)
+	allowedLateness int64
+	syms            map[string]*series
+	order           []*series // first-seen order, so watermark closes are deterministic
+	wm              int64
+	late            int64
+	sentMs          int64 // sent_ms of the record being applied, for latency breakdowns
 }
 
-func newPartition(firstClose bool) *partition {
-	return &partition{firstClose: firstClose, syms: make(map[string]*series), wm: math.MinInt64}
+func newPartition(firstClose bool, allowedLateness ...int64) *partition {
+	var lat int64
+	if len(allowedLateness) > 0 {
+		lat = allowedLateness[0]
+	}
+	return &partition{
+		firstClose:      firstClose,
+		allowedLateness: lat,
+		syms:            make(map[string]*series),
+		wm:              math.MinInt64,
+	}
 }
 
 func windowStart(ts int64) int64 {
 	return ts - ((ts%windowMs)+windowMs)%windowMs
 }
 
-// add applies one record. A window closes when a later event arrives for its
-// symbol, or when the partition watermark passes the window's end.
+// add applies one record. A window closes immediately when a later event arrives
+// for its own symbol (own watermark), or at latest when the partition watermark
+// passes the window's end + allowedLateness.
 func (p *partition) add(t *tick, out sink) {
 	p.sentMs = t.SentMs
 	if t.Symbol == "" {
@@ -92,8 +104,8 @@ func (p *partition) add(t *tick, out sink) {
 		return
 	}
 	ws := windowStart(t.TsMs)
-	if ws+windowMs <= p.wm {
-		p.late++ // its window has already closed
+	if ws+windowMs+p.allowedLateness <= p.wm {
+		p.late++ // its window has already closed by partition timeout
 		return
 	}
 	s := p.syms[t.Symbol]
@@ -102,15 +114,21 @@ func (p *partition) add(t *tick, out sink) {
 		p.syms[t.Symbol] = s
 		p.order = append(p.order, s)
 	}
-	if s.open && ws != s.ws {
-		if ws < s.ws {
-			p.late++
-			return
-		}
+
+	// Check if this symbol has already closed this window
+	if (s.open && ws < s.ws) || (!s.open && s.lastClosedWs != 0 && ws <= s.lastClosedWs) {
+		p.late++
+		return
+	}
+
+	// Own watermark fast path: stock's own trade in a later window closes its open window immediately
+	if s.open && ws > s.ws {
 		p.close(s, out)
 	}
+
 	if !s.open {
 		*s = series{symbol: s.symbol, seeded: s.seeded, ema38: s.ema38, ema100: s.ema100, rel: s.rel,
+			lastClosedWs: s.lastClosedWs,
 			open: true, ws: ws, o: t.Last, h: t.Last, l: t.Last, c: t.Last,
 			firstTs: t.TsMs, lastTs: t.TsMs, firstSeq: t.Seq, lastSeq: t.Seq, trades: 1}
 	} else {
@@ -127,19 +145,20 @@ func (p *partition) add(t *tick, out sink) {
 	p.advance(t.TsMs, out)
 }
 
-// advance moves the watermark to ts. Windows only end on 5-minute
-// boundaries, so open windows are checked only when one is crossed.
+// advance moves the watermark to ts. Windows only end on 5-minute boundaries,
+// so open windows are checked only when one is crossed (accounting for allowedLateness).
 func (p *partition) advance(ts int64, out sink) {
 	if ts <= p.wm {
 		return
 	}
-	crossed := p.wm == math.MinInt64 || windowStart(ts) != windowStart(p.wm)
+	oldWm := p.wm
 	p.wm = ts
+	crossed := oldWm == math.MinInt64 || windowStart(ts-p.allowedLateness) != windowStart(oldWm-p.allowedLateness)
 	if !crossed {
 		return
 	}
 	for _, s := range p.order {
-		if s.open && s.ws+windowMs <= ts {
+		if s.open && s.ws+windowMs+p.allowedLateness <= ts {
 			p.close(s, out)
 		}
 	}
@@ -159,6 +178,7 @@ func (p *partition) close(s *series, out sink) {
 		s.ema38, s.ema100 = float64(c*a38), float64(c*a100)
 	}
 	s.seeded = true
+	s.lastClosedWs = s.ws
 	s.open = false
 	out.bar(&bar{symbol: s.symbol, windowStart: s.ws, open: s.o, high: s.h, low: s.l, close: c,
 		trades: s.trades, ema38: s.ema38, ema100: s.ema100, triggerSentMs: p.sentMs})

@@ -150,6 +150,7 @@ services:
     environment:
       <<: *kafka-env
       EMA_INIT: ${EMA_INIT}
+      ALLOWED_LATENESS_MS: ${ALLOWED_LATENESS_MS:-1000}
     depends_on:
       redpanda-init:
         condition: service_completed_successfully

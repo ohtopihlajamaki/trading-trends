@@ -16,10 +16,10 @@ SELECT column00 AS symbol, column01 AS sectype,
 FROM ${source}
 WHERE column00 != 'ID' AND column21 IS NOT NULL AND column23 IS NOT NULL;
 
--- One COPY per bucket keeps each file in event order. Last = 0 is a placeholder
--- (the 00:00 snapshot before a symbol's first trade, or a symbol that never
--- trades), never a trade, so it is rejected with the unparseable rows.
+-- One COPY per bucket. In receipt-order mode (ORDER BY seq), records stay in
+-- raw arrival order. Late ticks will be dropped by the signal service.
 COPY (SELECT symbol, sectype, last, event_ts, seq FROM day
       WHERE bucket = ${bucket} AND event_ts IS NOT NULL AND last > 0
-      ORDER BY event_ts, seq)
+      -- ORDER BY event_ts, seq
+      ORDER BY seq)
 TO '${out}' (FORMAT parquet, COMPRESSION zstd);

@@ -72,14 +72,15 @@ var (
 )
 
 type config struct {
-	brokers      []string
-	group        string
-	ticksTopic   string
-	barsTopic    string
-	signalsTopic string
-	firstClose   bool
-	pollRecords  int
-	metricsAddr  string
+	brokers         []string
+	group           string
+	ticksTopic      string
+	barsTopic       string
+	signalsTopic    string
+	firstClose      bool
+	allowedLateness int64
+	pollRecords     int
+	metricsAddr     string
 }
 
 func env(key, def string) string {
@@ -91,12 +92,18 @@ func env(key, def string) string {
 
 func loadConfig() (config, error) {
 	c := config{
-		brokers:      strings.Split(env("KAFKA_BROKERS", "localhost:19092"), ","),
-		group:        env("SIGNAL_GROUP", "signal"),
-		ticksTopic:   env("TICKS_TOPIC", "ticks"),
-		barsTopic:    env("BARS_TOPIC", "bars_ema"),
-		signalsTopic: env("SIGNALS_TOPIC", "signals"),
-		metricsAddr:  env("METRICS_ADDR", ":9100"),
+		brokers:         strings.Split(env("KAFKA_BROKERS", "localhost:19092"), ","),
+		group:           env("SIGNAL_GROUP", "signal"),
+		ticksTopic:      env("TICKS_TOPIC", "ticks"),
+		barsTopic:       env("BARS_TOPIC", "bars_ema"),
+		signalsTopic:    env("SIGNALS_TOPIC", "signals"),
+		allowedLateness: 1000, // default 1000 ms (1 second) allowed lateness
+		metricsAddr:     env("METRICS_ADDR", ":9100"),
+	}
+	if v := os.Getenv("ALLOWED_LATENESS_MS"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
+			c.allowedLateness = n
+		}
 	}
 	switch init := env("EMA_INIT", "first_close"); init {
 	case "first_close":
@@ -201,7 +208,7 @@ func (a *app) assigned(_ context.Context, _ *kgo.Client, assigned map[string][]i
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, p := range assigned[a.cfg.ticksTopic] {
-		a.parts[p] = &owned{partition: newPartition(a.cfg.firstClose)}
+		a.parts[p] = &owned{partition: newPartition(a.cfg.firstClose, a.cfg.allowedLateness)}
 	}
 	assignedPartitions.Set(float64(len(a.parts)))
 	log.Printf("assigned %v, now own %d partitions", assigned[a.cfg.ticksTopic], len(a.parts))
