@@ -21,6 +21,9 @@
 #   MATRIX_DRY_RUN=1      print the runs and their core sets, run nothing
 #   MATRIX_NO_TMUX=1      run in the foreground
 #
+# With sysstat and procps installed, each run also gets <run>.mpstat (per-core
+# load every 5 s) and <run>.vmstat (including stolen CPU time) next to its log.
+#
 # Core numbers are Linux CPU numbers. With hyperthreading, two numbers can be
 # the two threads of one physical core (lscpu -e shows which); choose
 # FIRST_CORE and the counts so a run gets whole cores, and say which in the report.
@@ -111,10 +114,22 @@ for n in $cores_list; do
       echo "... $(date +%H:%M)"
 
       log="$dir/$cell.log"
-      if CPUS_REDPANDA=$CPUS_REDPANDA CPUS_SIGNAL=$CPUS_SIGNAL CPUS_GATEWAY=$CPUS_GATEWAY \
+      # Per-core load and system counters during the run (sysstat, procps), to
+      # see what else ran on the pipeline's cores and how much CPU was stolen
+      mon=()
+      if command -v mpstat >/dev/null; then
+        S_TIME_FORMAT=ISO mpstat -P ALL 5 >"$dir/$cell.mpstat" 2>&1 & mon+=($!)
+      fi
+      if command -v vmstat >/dev/null; then
+        vmstat -t 5 >"$dir/$cell.vmstat" 2>&1 & mon+=($!)
+      fi
+      ok=0
+      CPUS_REDPANDA=$CPUS_REDPANDA CPUS_SIGNAL=$CPUS_SIGNAL CPUS_GATEWAY=$CPUS_GATEWAY \
         CPUS_CLICKHOUSE=$CPUS_CLICKHOUSE CPUS_REPLAYER=$load CPUS_PROBE=$load \
         REDPANDA_SMP=$rp REDPANDA_MEMORY=${rp}G SIGNAL_INSTANCES=$sig REPLAY_COPIES=$k \
-        bench/realtime.sh >"$log" 2>&1; then
+        bench/realtime.sh >"$log" 2>&1 || ok=$?
+      (( ${#mon[@]} == 0 )) || kill "${mon[@]}" 2>/dev/null || true
+      if (( ok == 0 )); then
         # Each "Results: x.csv, x.md" line: one part of the test (realtime, sweep)
         while read -r csv; do
           part=$(basename "$csv" | cut -d- -f1)
