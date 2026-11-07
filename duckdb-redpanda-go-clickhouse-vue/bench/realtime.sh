@@ -34,6 +34,9 @@
 #                         tick replayed k times; expected ticks and bars scale with it
 #   WS_MAX_PENDING_BARS   the gateway's per-client bar limit; default scales with
 #                         REPLAY_COPIES (20,000, or 10,000 per copy from 3 copies)
+#   CATCHUP_TIMEOUT_S     how long the services may take to read a backlog before a
+#                         window (default 900 + 60 per copy: the fast-forward of a whole
+#                         day at REPLAY_COPIES=20 takes ClickHouse ~17 min on one core)
 #
 # The test uses its own Compose project (stock-signals-rt), so the pipeline's
 # usual volumes are not touched; stop the usual stack first, as both publish
@@ -63,6 +66,8 @@ copies=${copies:-1}
 # limits must hold that burst with room to spare, yet a full frame must stay
 # within the probe's 64 MiB read limit (about 250,000 bars)
 export WS_MAX_PENDING_BARS=${WS_MAX_PENDING_BARS:-$(( copies > 2 ? 10000 * copies : 20000 ))}
+catchup_s=${CATCHUP_TIMEOUT_S:-$(( 900 + 60 * copies ))}
+[[ "$catchup_s" =~ ^[1-9][0-9]*$ ]] || { echo "CATCHUP_TIMEOUT_S must be a positive integer" >&2; exit 1; }
 export WS_MAX_PENDING_SIGNALS=${WS_MAX_PENDING_SIGNALS:-$(( 5000 * copies ))}
 case $mode in all | realtime | sweep) ;; *) echo "MODE must be all, realtime or sweep" >&2; exit 1 ;; esac
 (( span_min >= 15 && span_min % 5 == 0 )) || { echo "SWEEP_SPAN_MIN must be a multiple of 5, at least 15" >&2; exit 1; }
@@ -128,7 +133,7 @@ gateway_bars() {
 # caught_up: wait until the signal service, ClickHouse and the gateway have read
 # everything produced so far, so a measured span does not compete with backlog
 caught_up() {
-  local ticks bars deadline=$(( $(date +%s) + 900 ))
+  local ticks bars deadline=$(( $(date +%s) + catchup_s ))
   ticks=$(offsets ticks)
   until (( $(committed signal ticks) >= ticks && $(committed ch-ticks ticks) >= ticks )); do
     (( $(date +%s) < deadline )) || { echo "timed out waiting for the ticks backlog" >&2; exit 1; }
@@ -173,7 +178,7 @@ measure() {
 
   log="$work/replay-$tag.log"
   replay "$day" "$from_hms" "$until_hms" "$speed" >"$log" || { echo "replay failed; see $log" >&2; exit 1; }
-  local ticks deadline=$(( $(date +%s) + 900 ))
+  local ticks deadline=$(( $(date +%s) + catchup_s ))
   ticks=$(offsets ticks)
   until (( $(committed signal ticks) >= ticks )); do
     (( $(date +%s) < deadline )) || { echo "timed out waiting for the signal service" >&2; exit 1; }
