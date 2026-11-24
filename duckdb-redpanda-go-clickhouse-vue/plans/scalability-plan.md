@@ -31,7 +31,7 @@ SMT note for every scaling result: 10 vCPUs sit on about 5 physical cores, so cu
 - [ ] Step 2: more than one core per signal instance
 - [ ] Step 3: cheaper per-tick processing (profile first)
 - [ ] Step 4: long tail and partition skew
-- [ ] Step 5: periodic watermarks and allowed lateness
+- [ ] Step 5: periodic watermarks and allowed lateness (receipt order and allowed lateness done; watermarks and sweep open)
 - [ ] Step 6: subscriber path
 - [ ] Step 7: next bottlenecks, only if measured
 
@@ -149,18 +149,17 @@ A binary wire format (Avro, Protobuf, fixed layout) is the bigger alternative. M
 
 **Problem.**
 - A window closes only on the next record in its partition, plus a day-end watermark (`replayer/main.go:236-238`). Quiet partitions close late, and more partitions make each one quieter.
-- The service allows zero lateness (`signal/state.go:95-98`) and relies on prep sorting each bucket (`prep/prep_day.sql:24`). The rubric asks for handling of late and out-of-order events.
+- ~~The service allows zero lateness and relies on prep sorting each bucket.~~ Done in `5ff1f3c` (2026-11-07): prep keeps receipt order, and the service allows `ALLOWED_LATENESS_MS` (default 1000). See the tasks below.
 
 **Tasks**
 - [ ] Measure disorder in the raw CSVs, read-only. In file order, find the share of trade rows earlier than the running max event time per symbol and per bucket, and the lateness p50/p99/max per exchange. This decides how much of the rest matters, and it belongs in the dataset analysis.
 - [ ] Periodic watermarks in the replayer, every `WATERMARK_MS` of event time (e.g. 1000). One replayer worker pops records in global event order across its buckets. When the heap head first reaches or passes a boundary T, every bucket of that worker has its next tick at or after T, so a watermark T is valid for each of them. Emit one per bucket at that moment. Count them in `replayer_records_total{kind="watermark"}`. `check.sh` gate 3 already counts watermarks.
-- [ ] `ALLOWED_LATENESS` in the signal service:
-  - The watermark becomes max event time − lateness.
-  - A window closes only when that watermark passes its end, or when the symbol's next tick is beyond end + lateness.
-  - Ticks for closed windows are counted as late and dropped.
-  - Replayer watermarks are already lateness-safe for sorted input.
-- [ ] `PREP_ORDER=receipt`: buckets in file order (`ORDER BY seq`) instead of event order. The oracle stays on event-time order, so `check.sh` shows what disorder costs. With receipt order, replayer watermarks are not valid: disable them (`WATERMARK_MS=0`) and rely on the service's lateness bound.
-- [ ] Sweep `ALLOWED_LATENESS` = 0, 1 s, 5 s, 30 s in receipt order. Report late ticks, bars and signals that differ from the oracle, and window-end → UI latency. Pick the default from that.
+- [x] `ALLOWED_LATENESS_MS` in the signal service (`5ff1f3c`, default 1000, `signal/main.go`, `signal/state.go`):
+  - A window closes when the partition watermark passes its end + lateness, or immediately when the symbol's own next tick lands in a later window.
+  - Ticks for windows already closed, by either rule, are counted as late and dropped.
+  - Tested on Mon–Tue against a Python reference: 0 ms gives 1 differing signal of 10,255, 1000 ms gives none (`bench/results/time_sync_tests.md`).
+- [x] Receipt order: prep writes buckets in file order (`ORDER BY seq`, `prep/prep_day.sql`). This is the only mode now; there is no `PREP_ORDER` switch. The day-end replayer watermarks are still sent. Not yet done: `check.sh` on the week in receipt order, to show what disorder costs against the event-time oracle.
+- [ ] Sweep `ALLOWED_LATENESS_MS` = 0, 1 s, 5 s, 30 s in receipt order. Report late ticks, bars and signals that differ from the oracle, and window-end → UI latency. Pick the default from that.
 - [ ] Close latency in quiet hours with and without periodic watermarks (realtime p10/p35 windows).
 
 ---

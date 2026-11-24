@@ -1,9 +1,10 @@
 // Command replayer produces the Parquet buckets written by prep to the ticks
-// topic: bucket k goes to partition k, in event order, keyed by symbol.
+// topic: bucket k goes to partition k, in the bucket's receipt order, keyed by
+// symbol.
 //
 // Each of REPLAY_WORKERS goroutines owns the buckets with bucket % N == worker
-// and merges them by event time, so pacing (REPLAY_SPEED) holds across
-// buckets. After the last tick of each bucket-day the replayer writes a
+// and merges them by the event time of each bucket's next row, so pacing
+// (REPLAY_SPEED) holds across buckets. After the last tick of each bucket-day the replayer writes a
 // watermark record (empty symbol, ts_ms = midnight after that day) to the
 // bucket's partition, which lets the signal service close the day's last
 // windows.

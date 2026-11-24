@@ -1,6 +1,6 @@
 # 01 · Raw CSV → prep → Parquet bucket
 
-This step covers edges 1 and 2 of the graph: `data/raw → prep → data/ticks`. Prep reads a day's CSV with DuckDB, keeps the trades, and writes them into 32 Parquet buckets sorted by event time. Here, prep's own SQL (`prep/prep_day.sql`, loaded through `prep.py`) runs on 12 lines of Monday's file.
+This step covers edges 1 and 2 of the graph: `data/raw → prep → data/ticks`. Prep reads a day's CSV with DuckDB, keeps the trades, and writes them into 32 Parquet buckets in receipt (file) order. Here, prep's own SQL (`prep/prep_day.sql`, loaded through `prep.py`) runs on 12 lines of Monday's file.
 
 ## Run
 

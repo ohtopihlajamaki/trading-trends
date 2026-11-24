@@ -5,7 +5,7 @@ The streaming pipeline of the trading-trends course project. Commands below run 
 A week of DEBS 2022 Grand Challenge tick data is replayed through **DuckDB prep → Redpanda → Go signal
 service → ClickHouse → Go gateway → Vue UI**. The signal service computes EMA(38) and EMA(100) of every
 symbol over 5-minute windows and emits BUY/SELL crossovers, which the browser shows live. Everything runs
-in Docker Compose; only Docker and Git are needed on the host. [PLAN.md](../PLAN.md) is the design.
+in Docker Compose; only Docker and Git are needed on the host. [PLAN-2026-11-04.md](plans/PLAN-2026-11-04.md) is the design.
 
 ## Quick start
 
@@ -37,7 +37,7 @@ week on the Linux box). Replaying the same days twice appends them twice; start 
 
 | Path | Contents |
 | --- | --- |
-| `prep/` | DuckDB job: CSV → 32 Parquet buckets per day, sorted by event time; loads `instruments` |
+| `prep/` | DuckDB job: CSV → 32 Parquet buckets per day, in receipt (file) order; loads `instruments` |
 | `replayer/` | Go: Parquet → `ticks`, bucket *k* → partition *k*, with a watermark record after each bucket-day |
 | `signal/` | Go: windows, EMAs and the flip rule (`state.go`, unit-tested), consumer group with state rebuild |
 | `gateway/` | Go: WebSocket fan-out of `bars_ema` and `signals`, history from ClickHouse |

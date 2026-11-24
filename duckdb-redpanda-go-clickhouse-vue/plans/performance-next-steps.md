@@ -9,12 +9,12 @@ implementation 12, report 12, teamwork 2). The numbers come from a MacBook Air M
 
 | Criterion (max 3) | Exceptional asks for | Have | Missing |
 | --- | --- | --- | --- |
-| Functionality | Correct EMA38/EMA100 per window, correct advisories for all subscribed symbols | Bars, EMAs (bit for bit) and signals match `oracle.sql` on Monday, also when scaling 1→4 instances mid-drain | **EMA start and crossover rule differ from the spec** (below). No oracle check over the whole week |
-| Performance | The entire week processed smoothly; high throughput; low, stable latency | Monday at full speed (~450k ticks/s through the signal service); real-time windows from every weekday; sweeps of two 1-hour spans | The whole week in one run. Latency stability over all of it |
+| Functionality | Correct EMA38/EMA100 per window, correct advisories for all subscribed symbols | Bars, EMAs (bit for bit) and signals match `oracle.sql` on Monday, also when scaling 1→4 instances mid-drain, and on the whole week (2026-11-06, event-time-sorted prep) | **EMA start and crossover rule differ from the spec** (below). No oracle check over the whole week in receipt order |
+| Performance | The entire week processed smoothly; high throughput; low, stable latency | Monday at full speed (~450k ticks/s through the signal service); the whole week at 1000× on the laptop (2026-11-06); real-time windows from every weekday; sweeps of two 1-hour spans | The whole week at full speed and on the Linux box. Latency stability over all of it |
 | Scalability | All exchanges and volumes, peak rates, the long tail, room for more symbols, subscribers and resources | Peak window (p100) at up to 1000×; consumer-group scaling works | Scaling curves (instances, cores). Results per exchange. Partition skew from hot symbols. Subscriber scaling |
 | Creative explorations | Trade-offs backed by measurements, and/or a smart visualization | Smart visualization: candles with EMAs and signal markers, live signal grid, throughput. Variants A–F written up in `stock-signals-implementation-plan.md` | Measurements behind the trade-offs, above all **late and out-of-order events** (below) |
 | Report: design, implementation | Real-time, complex event processing (CEP), scalability; tick, housekeeping and metadata events; windowing, EMA state, crossovers, normalization | Material in `PLAN.md` and the plans | The report itself (ACM template, 4–5 pages). How housekeeping rows are dropped and `instruments` is used |
-| Report: evaluation | Correctness, throughput and latency under load, scaling across exchanges and resources, CPU utilization, long tail | Correctness on Monday; latency against load for 1 instance | CPU utilization, scaling, per exchange, long tail, out-of-order handling |
+| Report: evaluation | Correctness, throughput and latency under load, scaling across exchanges and resources, CPU utilization, long tail | Correctness on the week (laptop, before receipt order); latency against load for 1 instance; CPU per container for the week run | CPU utilization on the Linux box, scaling, per exchange, long tail, the lateness trade-off |
 | Report: writing | Clear, with a strong focus on dataset analysis | `notebooks/dataset_overview.ipynb`: hours, events per ID (long tail), activity over time | Per exchange and per security type; trade events versus all events; the peaks; how disordered the raw stream is |
 | Teamwork (2) | Each member answers the three questions; clear roles | Roles in the implementation plan | The answers in the report |
 
@@ -79,26 +79,27 @@ claims need confirming by measurement.
 ## Late and out-of-order events
 
 File order is receipt order, not event order. The spec warns that the total order of events per symbol
-cannot be assumed, and the rubric names "handling of late and out-of-order events". Today prep sorts each
-bucket by event time, so the service never sees disorder. Its watermark (the highest event time seen in
-the partition) has no slack, and a window also closes as soon as its symbol's next tick lands in a later
-window. Fed the raw order, it would drop every tick that arrives after its window closed, and we haven't
-measured how many that would be.
+cannot be assumed, and the rubric names "handling of late and out-of-order events".
+
+**Status (2026-11-07, `5ff1f3c`):** points 2 and 3 below are done. Prep keeps receipt order (`ORDER BY seq`,
+always; no `PREP_ORDER` switch), and the service closes a window when the partition watermark passes its end
+plus `ALLOWED_LATENESS_MS` (default 1000), or as soon as the symbol's next tick lands in a later window. On
+Mon–Tue, 0 ms lateness gave 1 differing signal of 10,255 and 1000 ms gave none
+(`bench/results/time_sync_tests.md`). Points 1 and 4 are still open.
 
 **Action points:**
 1. **Measure the disorder** in the raw CSVs (DuckDB, per day), in file order. Find the share of trade rows
    whose event time is earlier than the latest event time before them, per symbol and per bucket. Then
    get the lateness distribution (p50, p99, max) per exchange. This also goes into the dataset analysis.
-2. **Receipt-order mode:** `PREP_ORDER=receipt` writes each bucket in file order (`seq`) instead of
+2. **Receipt-order mode (done):** prep writes each bucket in file order (`seq`) instead of
    `(event_ts, seq)`. The oracle stays on ClickHouse's event-time order, so `check.sh` shows exactly what
    disorder costs.
-3. **Bounded out-of-orderness in the service:** watermark = highest event time − `ALLOWED_LATENESS`. Windows
+3. **Bounded out-of-orderness in the service (done):** watermark = highest event time − `ALLOWED_LATENESS`. Windows
    close only when the watermark passes their end; ticks later than that are counted as late and
    dropped. The replayer's periodic watermarks (step 6) must respect the same bound.
-4. **Measure the trade-off:** for `ALLOWED_LATENESS` = 0, 1 s, 5 s, 30 s and more, report late ticks,
+4. **Measure the trade-off:** for `ALLOWED_LATENESS_MS` = 0, 1 s, 5 s, 30 s and more, report late ticks,
    bars/EMAs/signals that differ from the oracle, and window-end → UI latency. Pick the default from that.
-   If the disorder is small, say that sorting in prep is the same as a lateness bound with no loss. The
-   numbers then justify it.
+   The numbers then justify the default.
 
 ## What the measurements show so far
 
@@ -127,7 +128,8 @@ runs and the trade-offs.
 **2. Late and out-of-order events:** the action points above. Do the measurement first, since it decides
 how much of the rest is needed.
 
-**3. The whole week on Linux** (Performance, Functionality)
+**3. The whole week on Linux** (Performance, Functionality). It has run once on the laptop at 1000×
+(`bench/results/week-1000x-Ohto-MacBook-Air-20261106-1641.md`), before the switch to receipt order.
 
 ```sh
 export COMPOSE_FILE=compose.yaml:compose.perf.yaml

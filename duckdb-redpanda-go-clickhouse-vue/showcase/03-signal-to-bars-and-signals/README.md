@@ -52,9 +52,9 @@ This is what step 02 produced and saved in `../02-replayer-to-topic/output/recor
 
 **Each record** ([`signal/state.go`](../../signal/state.go), `add`):
 1. The record's window is `ts_ms` rounded down to 5 minutes.
-2. A tick whose window ended at or before the watermark is late, and is dropped. There are none here.
+2. A tick is late, and is dropped, if its window ended at least `ALLOWED_LATENESS_MS` (default 1000) before the watermark, or if its symbol has already closed that window. There are none here.
 3. A tick for a symbol whose open window is earlier closes that window first.
-4. When the watermark crosses a 5-minute boundary, every open window that has ended is closed. A watermark record only moves the watermark.
+4. When the watermark, minus the allowed lateness, crosses a 5-minute boundary, every open window that ended at least the allowed lateness before the watermark is closed. A watermark record only moves the watermark.
 
 **Closing a window.**
 - The close is the trade with the greatest `(ts_ms, seq)`.

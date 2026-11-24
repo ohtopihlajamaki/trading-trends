@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Turn each day's CSV into PARTITIONS Parquet buckets sorted by event time.
+"""Turn each day's CSV into PARTITIONS Parquet buckets in receipt (file) order.
 
 For every day in DAYS this reads RAW_DIR/<day>.csv and writes
 TICKS_DIR/bucket=<kk>/<day>.parquet, one file per bucket, and prints the

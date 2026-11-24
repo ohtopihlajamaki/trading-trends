@@ -66,7 +66,8 @@ type series struct {
 }
 
 // partition holds every symbol of one ticks partition. Its records arrive in
-// event order, so the highest event time seen is the partition watermark.
+// receipt order, roughly but not strictly by event time. The highest event
+// time seen is the partition watermark; windows wait allowedLateness past it.
 type partition struct {
 	firstClose      bool // seed both EMAs with the first close (else with zero)
 	allowedLateness int64

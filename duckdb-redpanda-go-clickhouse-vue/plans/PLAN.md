@@ -1,5 +1,7 @@
 # Stock Signals — Plan
 
+> **Superseded** by [PLAN-2026-11-04.md](PLAN-2026-11-04.md). Kept for history; parts of it (for example, prep sorting by event time) no longer match the code.
+
 Short, opinionated version of the implementation plan. It is the spec for the starter `compose.yaml`.
 
 We replay a week of DEBS 2022 tick data, compute EMA(38) and EMA(100) per symbol over 5-minute windows, and push BUY/SELL crossovers to a browser. The stack: **DuckDB prep → Redpanda → Go signal service → ClickHouse → Go gateway → Vue UI**. Everything runs in Docker Compose. The base config runs on macOS, Windows and Linux. Benchmark numbers come only from Linux, with a performance override.

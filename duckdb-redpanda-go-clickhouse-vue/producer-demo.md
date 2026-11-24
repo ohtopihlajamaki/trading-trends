@@ -173,8 +173,8 @@ COMPOSE_FILE=compose.yaml:compose.perf.yaml bench/replay-speeds.sh   # the Linux
 ```
 
 With `compose.perf.yaml`, Redpanda runs without dev mode and the producer is pinned to the cores in
-`CPUS_REPLAYER`, so compare those results only with each other. The `CPUS_*` values in `.env` are an example
-for 16 threads: set them to cores the machine has, or the containers will not start.
+`CPUS_REPLAYER`, so compare those results only with each other. The `CPUS_*` values in `.env.example` are an example
+for a 10-vCPU VM: set them to cores the machine has, or the containers will not start.
 
 **Reading the result**
 

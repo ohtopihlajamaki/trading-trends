@@ -11,15 +11,20 @@ been traded at its real time.
 
 ## How they reach the EMAs
 
-Prep is a batch step. It reads the whole day's CSV and writes each bucket with
+> **Update 2026-11-07 (`5ff1f3c`):** prep now writes each bucket in receipt order (`ORDER BY seq`),
+> so the second paragraph below is what happens today, and the EMA effects described in this note
+> apply only to the earlier event-time-sorted prep. The signal service now drops these rows as late;
+> ClickHouse's `ticks` and the oracle still include them.
+
+Prep is a batch step. Until `5ff1f3c` it wrote each bucket with
 `ORDER BY event_ts, seq` ([prep_day.sql](../prep/prep_day.sql)), so these rows, from the last 0.2%
-of the file, open every bucket file (in bucket 7 they are the first 207 of 335,962 rows). The
-replayer streams those sorted files and merges the buckets by event time, so the rows reach the
+of the file, opened every bucket file (in bucket 7 they were the first 207 of 335,962 rows). The
+replayer streamed those sorted files and merged the buckets by event time, so the rows reached the
 signal service first, almost six hours before the day's first real trade (07:00:00.964).
 
-In receipt order (`PREP_ORDER=receipt`, not built yet) they would arrive at 18:56, and the signal
-service would drop all 5,506 as late, because their 01:00–01:05 window ended long before the
-watermark. They would still reach ClickHouse, though: `ticks_queue_mv` copies the topic into
+In receipt order (now the only mode) they arrive at 18:56, and the signal
+service drops all 5,506 as late, because their 01:00–01:05 window ended long before the
+watermark. They still reach ClickHouse, though: `ticks_queue_mv` copies the topic into
 `ticks` without a lateness check, and `backfill.sql` reads the Parquet directly. So the 01:00 prices
 reach `ticks` and the `bars_5m` oracle in either order.
 
@@ -73,9 +78,9 @@ names the cause.
 So giving them the right timestamp wouldn't help. At their real times they'd duplicate trades
 already in the data, and at 18:56 they'd make a fake bar after the close. They should be dropped.
 
-## What they do to the EMAs
+## What they did to the EMAs (event-time-sorted prep)
 
-Prep sorts them before Wednesday's open, so each index gets one extra bar at 01:00. That bar's
+With event-time sorting, prep put them before Wednesday's open, so each index got one extra bar at 01:00. That bar's
 close is the last of the three rows, which is the **day's low for 96% of the indices**. A low that
 the CAC 40 doesn't reach until 13:34 is already in its EMAs before the market opens.
 

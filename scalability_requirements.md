@@ -5,7 +5,7 @@ Requirements are qualitative on purpose. Concrete numbers come from our own eval
 
 Rubric anchor (Scalability, top grade): "Scales effectively across all exchanges and event volumes, including peak rates and the long-tail symbol distribution, with capacity for further increases (more symbols, more subscribers, more resources)."
 
-Reviewed against commit `23c1432`. The work plan that follows from this review, with decisions and status, is `duckdb-redpanda-go-clickhouse-vue/plans/scalability-plan.md`; step 1 there has since added per-partition tick metrics, pprof, and `docker stats` sampling in the bench scripts (Req 4 and 10 instrumentation, no results yet). Paths in the Details section are relative to `duckdb-redpanda-go-clickhouse-vue/` unless they start with `data/` or `notebooks/`.
+Reviewed against commit `23c1432`. The work plan that follows from this review, with decisions and status, is `duckdb-redpanda-go-clickhouse-vue/plans/scalability-plan.md`; step 1 there has since added per-partition tick metrics, pprof, and `docker stats` sampling in the bench scripts (Req 4 and 10 instrumentation). Updated after commit `5ff1f3c` (2026-11-07) for three changes: the whole week has run once (`bench/results/week-1000x-…-1641.md`), prep now keeps receipt order, and the signal service allows lateness (`ALLOWED_LATENESS_MS`, default 1000). Paths in the Details section are relative to `duckdb-redpanda-go-clickhouse-vue/` unless they start with `data/` or `notebooks/`.
 
 **Status legend.** *Addressed*: the code implements it **and** the repo holds a result that shows it. *Partially*: the code implements part of it, or implements it with no report-grade result yet. *Not addressed*: the code does not implement it. *Unclear*: the answer depends on runtime config or deployment.
 
@@ -13,14 +13,14 @@ Reviewed against commit `23c1432`. The work plan that follows from this review, 
 
 | # | Requirement | How the current design addresses it | Evidence / metric | Status |
 |---|---|---|---|---|
-| 1 | Process the full week (289M events, 5,504 symbols) without falling behind | Replayer streams all `DAYS` into `ticks`, and topics never expire by time. Prep drops non-trade rows before streaming, so the stream carries 59.4M ticks and 4,970 symbols, not 289M and 5,504. The whole week has never been run in one go. | Sustained events/s; consumer lag over time | Partially |
+| 1 | Process the full week (289M events, 5,504 symbols) without falling behind | Replayer streams all `DAYS` into `ticks`, and topics never expire by time. Prep drops non-trade rows before streaming, so the stream carries 59.4M ticks and 4,970 symbols, not 289M and 5,504. The whole week ran once on the laptop at 1000× (before the switch to receipt order). | Sustained events/s; consumer lag over time | Partially |
 | 2 | Handle all three exchanges (FR, NL, ETR) together | Exchange is not a dimension anywhere in the stream: symbols from all exchanges are hashed into the same 32 partitions. Nothing measures per exchange and there is no per-exchange replay switch. | Throughput and latency per exchange vs combined | Partially |
 | 3 | Sustain peak event rates, not just the average | Paced replay (`REPLAY_SPEED`) plus a sweep over the busiest window (p100). With 1 signal instance it holds 1000× (~360k ticks/s, p95 233 ms) and falls behind at 3000×. | Max sustainable rate (accelerated replay); latency at peak | Partially |
 | 4 | Cope with the skewed (long-tail) symbol distribution | Static `hash(symbol) % 32` in prep, so no single symbol dominates (top one is 0.27%). Hash collisions still make the hottest partition 1.52× the mean (1.62× at peak), and nothing rebalances or measures it per partition at runtime. | Per-partition load and CPU spread; latency for hot vs rare symbols | Partially |
 | 5 | Scale out by adding resources (workers, partitions, VMs) | Signal service is a consumer group: `--scale signal=K`, K ≤ 32, one processing goroutine per instance. Gateway scales by instance. Redpanda, ClickHouse and the replayer each run as one instance. Nothing is configured for a second VM; by decision, scale-out is shown on one host (see Decisions). | Throughput and latency vs number of workers/cores on one host | Partially |
 | 6 | Headroom for more symbols and more subscribers | Per-symbol state is a map per partition, so memory grows linearly with symbols. Changing the partition count means re-running prep. Every gateway reads every bar and signal, and every signal goes to every client. History comes from a single ClickHouse. None of this is tested. | Behaviour as symbol count and subscriber count increase | Partially |
 | 7 | Subscribers do not affect the core computation (all symbols always computed; output only for the subscribed subset) | The signal service has no knowledge of subscribers and computes every symbol. Output goes through Redpanda topics that the gateway reads in its own consumer group without committing, and per-client buffers drop rather than block. Bars are filtered per subscription, but signals go to every client. | Processing latency with 0, 1, many subscribers | Partially |
-| 8 | Results stay correct at any parallelism (per-symbol grouping and order, 5-min tumbling windows, per-symbol EMA state, window w_i evaluated when w_{i+1} starts) | State is per partition, and partition is a fixed function of symbol. Windows use event time and are clock-aligned. A rebalance rebuilds state from offset 0. Outputs are acknowledged before offsets are committed. Disorder is removed by sorting in prep: the service allows zero lateness. | EMA and buy/sell advisories identical across worker counts vs a single-worker reference | Partially |
+| 8 | Results stay correct at any parallelism (per-symbol grouping and order, 5-min tumbling windows, per-symbol EMA state, window w_i evaluated when w_{i+1} starts) | State is per partition, and partition is a fixed function of symbol. Windows use event time and are clock-aligned. A rebalance rebuilds state from offset 0. Outputs are acknowledged before offsets are committed. Prep keeps receipt order; the service closes a symbol's window on its own next tick in a later window, or when the partition watermark passes the window end plus `ALLOWED_LATENESS_MS` (default 1 s), and drops later ticks as late. | EMA and buy/sell advisories identical across worker counts vs a single-worker reference | Partially |
 | 9 | Latency stays stable as load and parallelism grow | Latency is measured at every stage (histograms, probe). Latency against load exists for 1 instance only, over 1-hour spans. | Latency distribution (p50/p99) vs load; no backlog growth | Partially |
 | 10 | Resource use is observable per component | Prometheus scrapes all five components, and Grafana shows throughput, lag, latency and Go heap. There is no per-container CPU, network or disk collector, and no run has recorded utilisation. | CPU, memory, network, disk per component | Partially |
 
@@ -47,7 +47,8 @@ Notes
 
 **Existing evidence**
 - `bench/results/full-speed-Ohto-MacBook-Air-20261030-1055.md`: **Monday only**, 11.79M records. The signal service drained in 26.2 s (~450k/s) and the backlog peaked at 7.0M records, then drained (lines 21-29, 56-62). `check.sh` passed.
-- No whole-week run exists. `plans/PLAN-2026-11-04.md:464` and `474` list both "pass `check.sh` on the whole week" and "replay the whole week" as open todos.
+- `bench/results/week-1000x-Ohto-MacBook-Air-20261106-1641.md`: the whole week (59.4M ticks) at 1000× in one run, on the laptop, with 1 signal instance. Drained 0.4 s after the replayer finished; 0 late ticks; `check.sh` passed. This was **before** prep switched to receipt order (`5ff1f3c`), so `check.sh` has not yet been re-run on the current code.
+- A whole-week replay at full speed is still an open todo (`plans/PLAN-2026-11-04.md`).
 - No lag-over-time series is stored for any run beyond the 5-row backlog table above.
 
 ### 2. All three exchanges together
@@ -101,7 +102,7 @@ Notes
 **Limits**
 - The mapping is static: no load-aware assignment, no hot-key handling.
 - Changing `PARTITIONS` requires re-running prep. `create-topics.sh` will add partitions to an existing topic (`redpanda/create-topics.sh:18-19`), which would leave earlier data under the old mapping.
-- Per-partition processing load is not exported. There is lag per partition (`signal/main.go:313`), but `signal_ticks_total` has no partition label (`signal/main.go:33-35`), and CPU per instance is not collected (see 10).
+- Per-partition processing load is now exported: `signal_ticks_total` is labelled by partition (`signal/main.go:37`), next to lag per partition. CPU per container is sampled by `bench/stats.sh` (see 10). No run has yet recorded per-partition max/mean at runtime.
 - Quiet partitions close late: windows close only on the next record in the partition, plus a day-end watermark (`replayer/main.go:236-238`). There are no periodic watermarks. **More partitions make each one sparser**, which lengthens close latency in quiet hours: the realtime p35 median wait is 112 ms (`bench/results/realtime-…-1649.md:15`).
 
 **Existing evidence**
@@ -190,19 +191,19 @@ Notes
 - Windows are clock-aligned 5-minute buckets of event time (`signal/state.go:8`, `82-84`). Processing time is used only for latency fields (`sent_ms`, `emitted_ms`).
 
 **Late and out-of-order events**
-- Disorder is removed before streaming, not handled:
-  - Prep sorts each bucket by `(event_ts, seq)` (`prep/prep_day.sql:24`).
+- Disorder is kept in the stream and handled by the signal service:
+  - Prep writes each bucket in receipt (file) order, `ORDER BY seq` (`prep/prep_day.sql:24`).
   - Each bucket is read by a single replayer goroutine, in file order.
   - The producer does not set ordering explicitly (`replayer/main.go:425-431`), so per-partition order relies on franz-go's default idempotent producer.
-- The service's watermark is the highest event time seen in the partition, with **zero allowed lateness**. A tick whose window has already closed is dropped and counted in `signal_late_ticks_total` (`signal/state.go:95-98`, `105-109`; `signal/main.go:42-44`).
-- Raw receipt-order disorder has not been measured or supported. This is acknowledged in `plans/performance-next-steps.md:77-99` and listed as a todo in `plans/PLAN-2026-11-04.md:467-471`.
+- The service's watermark is the highest event time seen in the partition. A window closes on the symbol's own next tick in a later window, or when the watermark passes its end plus `ALLOWED_LATENESS_MS` (default 1000; `signal/main.go:100-107`). A tick whose window has already closed, by either rule, is dropped and counted in `signal_late_ticks_total` (`signal/state.go:107-122`; `signal/main.go:46`).
+- Tested on Monday and Tuesday against a Python reference (`bench/results/time_sync_tests.md`): with zero lateness, 1 of 10,255 signals differed; with 1 s, all matched bit for bit. The lateness sweep (0, 1, 5, 30 s) and a whole-week `check.sh` in receipt order are still open (`plans/scalability-plan.md`, step 5).
 
 **Empty windows**
 - Windows are skipped. A new window starts only when a tick arrives (`signal/state.go:112-115`). A window with no trades emits no bar and does not advance the EMA, so the EMA counts traded windows, not wall-clock windows.
 - The oracle does the same (`clickhouse/oracle.sql:4-12`), so `check.sh` cannot detect a difference from another interpretation. The spec is silent here; `plans/performance-next-steps.md:177` says to state it in the report.
 
 **"w_i evaluated when w_{i+1} starts"**
-- A window closes on the symbol's next tick in a later window (`signal/state.go:105-111`), or when the partition watermark passes its end (`signal/state.go:132-146`). The day-end watermark closes the last windows (`replayer/main.go:236-238`).
+- A window closes on the symbol's next tick in a later window (`signal/state.go:124-128`), or when the partition watermark passes its end plus the allowed lateness (`signal/state.go:150-164`). The day-end watermark closes the last windows (`replayer/main.go:236-238`).
 
 **EMA state across restarts and rebalances**
 - State lives in memory only (`signal/main.go:183-195`). When a partition is assigned with committed offset C, the instance replays [0, C) without emitting, then continues (`signal/main.go:218-264`, `290-295`).
@@ -215,7 +216,7 @@ Notes
   - Partition is a pure function of the symbol (`prep/prep_day.sql:14`).
   - Each partition's records are applied in offset order by exactly one owner.
   - Bar contents depend only on the symbol's own ticks.
-  - With sorted input, a window's ticks all arrive before any record that could close it, so no tick is dropped as late at any partition count.
+  - In receipt order, whether a tick is late depends on the other symbols in its partition (they move the watermark). Results can therefore differ between partition counts when disorder exceeds `ALLOWED_LATENESS_MS`; at 1 s no difference was seen on Mon–Tue (`bench/results/time_sync_tests.md`), but no run varies `PARTITIONS`.
   - Only the **timing** of closes depends on how symbols share partitions, not the values.
 - Not shown by an automated test. `check.sh` compares the service against `oracle.sql` bit for bit (`clickhouse/check.sh:36-71`), and agreement with the oracle at each K would imply equality across K. But:
   - The only recorded pass is K = 1 on Monday (`bench/results/full-speed-…-1055.md:70-73`).
@@ -256,8 +257,8 @@ Notes
 - The `observe` profile is optional (`compose.yaml:211`, `223`), and no bench script starts it.
 
 **Existing evidence**
-- None. No result file contains CPU, memory, network or disk figures.
-- `plans/performance-next-steps.md:146-149` proposes sampling `docker stats`, but no script does it.
+- `bench/stats.sh` samples `docker stats` (CPU, memory, network, disk per container), and `full-speed.sh`, `signal-drain.sh` and `realtime.sh` start it.
+- One recorded result: `bench/results/stats-week-1000x-Ohto-MacBook-Air-20261106-1641.csv` (the whole-week run, laptop). None from the benchmark VM yet.
 
 ---
 
@@ -267,15 +268,15 @@ Ranked by how likely each is to cost points under Scalability, Performance, and 
 
 1. **No scaling curve.** Every recorded result uses 1 signal instance; the K = 1/2/4 drain numbers are prose only. The top Scalability level asks for "capacity for … more resources", and this is the most direct evidence for it. (Req 5, 9)
 2. **No report-grade numbers.** Everything ran on a laptop in dev-container mode (no fsync, no pinning), which the repo itself says not to report. Every Performance and Evaluation figure would have to be re-run on the perf setup. (Req 1, 3, 9)
-3. **The whole week has never run in one go**, and `check.sh` has passed only on Monday. The Performance top level says "entire week processed smoothly". (Req 1, 8)
+3. **The whole week has run once, on the laptop at 1000×, before the switch to receipt order.** `check.sh` passed then, but has not been re-run on the current code, and there is no whole-week run at full speed or on the benchmark VM. The Performance top level says "entire week processed smoothly". (Req 1, 8)
 4. **No per-exchange results.** The rubric names "all exchanges", and there is no per-exchange metric, replay filter or analysis. (Req 2)
 5. **Long-tail and skew are unmeasured at runtime.** Partition max/mean is 1.52 (1.62 at peak), which caps ideal speedup near 21× at K = 32. Processing load per partition and per instance is not exported, and there is no hot-vs-rare latency split. The rubric names "the long-tail symbol distribution" explicitly. (Req 4)
-6. **No CPU or resource utilisation recorded.** Evaluation asks for CPU utilisation, and only throughput and latency exist. (Req 10)
+6. **CPU and resource utilisation recorded only once, on the laptop** (the whole-week run). Evaluation asks for CPU utilisation; there are no VM results or scaling runs with it. (Req 10)
 7. **Correctness across parallelism is verified only in prose.** No scripted run compares K = 1 with K = N, or `PARTITIONS` = 16, 32 and 64, against the oracle. (Req 8)
 8. **"289M events" is not what the stream processes.** About 79% of rows are dropped in batch prep. If the report quotes 289M as throughput, that is a factual error. If it quotes 59M, it needs to justify why filtering belongs offline. (Req 1)
 9. **Subscriber scaling is untested.** Signals are broadcast to every client, history and symbol lists hit one ClickHouse, and there is no load balancer for M gateways. (Req 6, 7)
 10. **No multi-VM path.** The advertised broker address, `depends_on`, Prometheus discovery and local Parquet mounts all assume one host. By decision this is out of scope for the evaluation, so the risk is low, provided the report states that containers on one host share memory bandwidth, disk and network, and sketches the multi-VM path from the Details of Req 5 as future work. (Req 5)
-11. **Late and out-of-order events are removed by sorting rather than handled**, with zero lateness allowed. The rubric names "handling of late and out-of-order events", mainly in the report and evaluation rows. (Req 8)
+11. **Late and out-of-order events are now handled in the service** (receipt order, 1 s allowed lateness, tested on Mon–Tue), but the lateness trade-off is unmeasured: no sweep over `ALLOWED_LATENESS_MS` and no whole-week check in receipt order. The rubric names "handling of late and out-of-order events", mainly in the report and evaluation rows. (Req 8)
 12. **Quiet windows close late, and this gets worse with more partitions**, because there are no periodic watermarks. It affects latency in off-hours, and the scaling trade-off is unmeasured. (Req 4, 9)
 13. **Single-goroutine signal instance.** About one core per instance is usable; scaling within an instance is unexplored. This is defensible as a design choice, but should be measured. (Req 5)
 14. **Rebuild edge cases.** Rebuild cost grows with history, and retention could truncate history silently. Duplicate outputs after a crash reach WebSocket clients. Low likelihood in the evaluated runs. (Req 7, 8)
@@ -301,9 +302,9 @@ Every metric in the table that has no evidence, or only laptop evidence, with th
 | 6 | Gateway capacity vs clients and instances | N probes at 1, 10, 100, 1000 against 1 gateway, then against `--scale gateway=M`. Record `gateway_ws_dropped_total` and gateway CPU. |
 | 8 | Results identical across worker counts | `bench/reset-signal.sh`, then `bench/signal-drain.sh K`, then `clickhouse/check.sh`, for K in 1, 4, 32. Repeat once with `docker compose restart signal` mid-drain to force a rebuild. Commit the check output. |
 | 8 | Results identical across partition counts | After the `PARTITIONS=16` and `64` runs above, run `check.sh` on each. Also run `EXCEPT` between their `bars_ema FINAL` tables and the 32-partition run (all three should be empty). |
-| 8 | Cost of real disorder | Already planned (`plans/PLAN-2026-11-04.md:467-471`). Smallest first step is read-only: a DuckDB query over the raw CSVs in file order counting trade rows earlier than the running max per symbol. |
+| 8 | Cost of real disorder | Receipt order and allowed lateness are implemented. Remaining: sweep `ALLOWED_LATENESS_MS` = 0, 1 s, 5 s, 30 s and run `check.sh` on the week, reporting late ticks and differences from the oracle (`plans/scalability-plan.md`, step 5). |
 | 9 | Latency vs parallelism | `MODE=sweep SWEEP_WINDOWS=p100 SIGNAL_INSTANCES="1 2 3" bench/realtime.sh` (layout B, 3 signal vCPUs) |
-| 10 | CPU, memory, network and disk per component | Wrap any of the runs above with `docker stats --no-stream --format '{{.Name}},{{.CPUPerc}},{{.MemUsage}},{{.NetIO}},{{.BlockIO}}'` sampled every second into a CSV next to the result. That covers all four resources without adding a collector. |
+| 10 | CPU, memory, network and disk per component | The bench scripts already run `bench/stats.sh` and write a `stats-*.csv` next to each result; repeat the runs above on the benchmark VM. |
 
 ## Decisions (deployment)
 

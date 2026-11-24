@@ -1,6 +1,6 @@
 # 02 · Parquet buckets → replayer → `ticks` topic
 
-This step covers edges 4 and 5 of the graph: `data/ticks → replayer → redpanda`. The replayer reads a day's 32 bucket files, merges them by event time, and produces every row as a JSON record, bucket k to partition k. Here the replayer, built from this checkout, reads the buckets that step 01 wrote and produces them to a demo topic, `showcase-ticks`, on the project's Redpanda.
+This step covers edges 4 and 5 of the graph: `data/ticks → replayer → redpanda`. The replayer reads a day's 32 bucket files, merges them by the event time of each file's next row, and produces every row as a JSON record, bucket k to partition k. Here the replayer, built from this checkout, reads the buckets that step 01 wrote and produces them to a demo topic, `showcase-ticks`, on the project's Redpanda.
 
 ## Run
 
@@ -48,7 +48,7 @@ The replayer opens every bucket of every day in `DAYS`, and stops with `missing 
 
 ## Inside the replayer
 
-**Workers.** Each of the `REPLAY_WORKERS` goroutines owns the buckets with `bucket % 4 == worker`. It keeps its bucket readers in a heap ordered by the event time of each reader's current row, with ties going to the lower bucket, and always sends the earliest. A bucket's last item for the day is a watermark at the next midnight. An empty bucket starts with that watermark.
+**Workers.** Each of the `REPLAY_WORKERS` goroutines owns the buckets with `bucket % 4 == worker`. It keeps its bucket readers in a heap ordered by the event time of each reader's current row, with ties going to the lower bucket, and always sends the earliest. Within a bucket, rows keep prep's receipt order, so the merge is only roughly in event time: a late row goes out when its bucket reaches it. A bucket's last item for the day is a watermark at the next midnight. An empty bucket starts with that watermark.
 
 The Kafka timestamps in `records.jsonl` show the order that results:
 

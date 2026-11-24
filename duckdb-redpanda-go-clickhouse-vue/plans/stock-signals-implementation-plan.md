@@ -2,6 +2,8 @@
 
 Oct 17, 2026 · Kauri Halttunen
 
+> **Historical design options.** The current design is [PLAN-2026-11-04.md](PLAN-2026-11-04.md). Since 2026-11-07 prep keeps receipt order instead of sorting by event time, and the signal service handles disorder with `ALLOWED_LATENESS_MS`.
+
 ## Summary
 
 We rebuild the DEBS 2022 Grand Challenge as a browser app. The app replays a week of Infront tick data, computes EMA(38) and EMA(100) per symbol over 5-minute windows, and pushes BUY/SELL crossovers to the browser. The default stack is DuckDB → Redpanda → a stateful signal service → ClickHouse → a WebSocket gateway → a Vue UI. Every stage scales by adding partitions, threads or instances.
