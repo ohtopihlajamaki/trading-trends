@@ -9,21 +9,27 @@ in Docker Compose; only Docker and Git are needed on the host. [PLAN-2026-11-04.
 
 ## Quick start
 
-1. Put the CSV files in `../data/raw/` (the repository's `data/`, shared with `utils/`) (`081121.csv` … `141121.csv`).
-2. `cp .env.example .env` and set `CLICKHOUSE_PASSWORD`.
-3. Run:
+Prerequisites, expected time and output are in the [top-level README](../README.md#running-the-system).
+
+1. Put the CSV of each day in `../data/raw/` (the repository's `data/raw/`), under its Zenodo name
+   (`debs2022-gc-trading-day-08-11-21.csv`) or as `081121.csv`. `14-11-21` (Sunday) is optional: it only
+   gives the symbol details (index or equity, exchange). Without it they come from the replayed days.
+2. Run `./run.sh`. It ends with `PASSED` and the URLs below.
+
+`run.sh` runs these steps, which can also be run by hand:
 
 ```sh
-docker compose up -d                                # Redpanda, ClickHouse, signal, gateway, UI
+cp .env.example .env                                # once; the default CLICKHOUSE_PASSWORD is fine locally
+docker compose up -d --wait                         # Redpanda, ClickHouse, signal, gateway, UI
 docker compose --profile prep run --rm prep         # CSV -> ../data/ticks/bucket=KK/DDMMYY.parquet (≈1 min/day)
 docker compose --profile replay run --rm replayer   # Parquet -> ticks topic
-clickhouse/check.sh                                 # gates 3 and 4: counts and the oracle
+clickhouse/check.sh                                 # waits until drained, then the checks below
 ```
 
-Then open the UI at <http://localhost:5173>. To watch the producer on its own, see
-[producer-demo.md](producer-demo.md). `DAYS` in `.env` picks the days (one day by default; the full
-week on the Linux box). Replaying the same days twice appends them twice; start over with
-`docker compose down -v`.
+`DAYS` in `.env` picks the days: Monday (`081121`) by default, or the full week with
+`DAYS="081121 091121 101121 111121 121121"`. Replaying the same days twice appends them twice, so `run.sh`
+skips the replay when the `ticks` topic already holds records. Start over with `docker compose down -v`.
+To watch the producer on its own, see [producer-demo.md](producer-demo.md).
 
 | URL | What |
 | --- | --- |
@@ -37,6 +43,8 @@ week on the Linux box). Replaying the same days twice appends them twice; start 
 
 | Path | Contents |
 | --- | --- |
+| `run.sh` | The whole run, from the CSV to the checks (Quick start) |
+| `showcase/` | [One symbol through every stage](showcase/README.md), with what each stage receives and sends |
 | `prep/` | DuckDB job: CSV → 32 Parquet buckets per day, in receipt (file) order; loads `instruments` |
 | `replayer/` | Go: Parquet → `ticks`, bucket *k* → partition *k*, with a watermark record after each bucket-day |
 | `signal/` | Go: windows, EMAs and the flip rule (`state.go`, unit-tested), consumer group with state rebuild |
@@ -49,7 +57,9 @@ week on the Linux box). Replaying the same days twice appends them twice; start 
 
 ## Checks
 
-`clickhouse/check.sh` compares, exactly:
+`clickhouse/check.sh` first waits until no replayer is running and the signal service and ClickHouse have
+committed every record of their topics (at most `DRAIN_TIMEOUT` seconds, default 1800). Then it compares,
+exactly:
 
 - ticks topic offsets with ClickHouse's `ticks` + watermark records, and the output topics with their tables;
 - the service's bars (`bars_ema`) with the bars ClickHouse builds from `ticks` (`bars_5m`);

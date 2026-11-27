@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Turn each day's CSV into PARTITIONS Parquet buckets in receipt (file) order.
 
-For every day in DAYS this reads RAW_DIR/<day>.csv and writes
+For every day in DAYS this reads RAW_DIR/<day>.csv (or the same file under its
+Zenodo name, debs2022-gc-trading-day-dd-mm-yy.csv) and writes
 TICKS_DIR/bucket=<kk>/<day>.parquet, one file per bucket, and prints the
 checks from the plan: the preamble, the rejects, the trade-row share and the
-rows per bucket. The days in INSTRUMENT_DAYS (and DAYS) feed the instruments
-table, which is written to TICKS_DIR/instruments.parquet and loaded into
-ClickHouse over HTTP when CLICKHOUSE_URL is set.
+rows per bucket. The days in INSTRUMENT_DAYS (or DAYS, when none of those
+files is there) feed the instruments table, which is written to
+TICKS_DIR/instruments.parquet and loaded into ClickHouse over HTTP when
+CLICKHOUSE_URL is set.
 
     docker compose --profile prep run --rm prep
 """
@@ -88,10 +90,20 @@ def scan_stats(con, csv):
         FROM {read_csv(csv)} WHERE column00 != 'ID'""").fetchone()
 
 
+def raw_csv_paths(day):
+    """The names a day's CSV may have: <ddmmyy>.csv, or the Zenodo download's own name."""
+    return [RAW_DIR / f"{day}.csv", RAW_DIR / f"debs2022-gc-trading-day-{day[:2]}-{day[2:4]}-{day[4:]}.csv"]
+
+
+def raw_csv(day):
+    """The day's CSV in RAW_DIR under either name, or None."""
+    return next((p for p in raw_csv_paths(day) if p.exists()), None)
+
+
 def prep_day(con, day):
-    csv = RAW_DIR / f"{day}.csv"
-    if not csv.exists():
-        sys.exit(f"error: {csv} not found")
+    csv = raw_csv(day)
+    if csv is None:
+        sys.exit(f"error: {day}: neither {' nor '.join(map(str, raw_csv_paths(day)))} found")
     log(f"{day}: {csv} ({csv.stat().st_size / 1e9:.2f} GB)")
     check_preamble(csv)
 
@@ -152,7 +164,7 @@ def prep_day(con, day):
 
 def build_instruments(con, days):
     """One row per symbol: exchange from the ID suffix, ISIN and currency where any row has them."""
-    files = [str(RAW_DIR / f"{d}.csv") for d in days if (RAW_DIR / f"{d}.csv").exists()]
+    files = [str(p) for p in map(raw_csv, days) if p is not None]
     if not files:
         log("instruments: no files, skipped")
         return
@@ -200,7 +212,11 @@ def main():
 
     for day in DAYS:
         prep_day(con, day)
-    build_instruments(con, list(dict.fromkeys(INSTRUMENT_DAYS)))
+    instrument_days = list(dict.fromkeys(INSTRUMENT_DAYS))
+    if not any(map(raw_csv, instrument_days)):
+        log(f"instruments: no file for {' '.join(instrument_days)}, reading DAYS instead")
+        instrument_days = DAYS
+    build_instruments(con, instrument_days)
     log(f"done in {time.perf_counter() - start:.0f}s")
 
 
